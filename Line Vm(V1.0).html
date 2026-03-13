@@ -1,0 +1,1534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Z-Line Player - Vm V1.0 By Jai (LINE128 Z80 Chip)</title>
+    <style>
+        :root {
+            /* Classic Black & Grey aesthetic for standard Line OS games */
+            --case-color: #1a1a1c;
+            --screen-bg: #b4b4b4; 
+            --screen-pixel: #111111;
+        }
+
+        body {
+            background-color: #050505;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: 'Courier New', Courier, monospace;
+            color: #eee;
+            overflow: hidden;
+            user-select: none;
+            touch-action: none;
+        }
+
+        /* --- HARDWARE --- */
+        #line-player-case {
+            background-color: var(--case-color);
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: inset 0 1px 2px rgba(255,255,255,0.1), 0 15px 35px rgba(0,0,0,0.8);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            border: 2px solid #111;
+            position: relative;
+        }
+
+        .brand-logo {
+            color: #aaa;
+            font-weight: bold;
+            letter-spacing: 2px;
+            font-size: 14px;
+            margin-bottom: 2px;
+            text-transform: uppercase;
+            font-family: sans-serif;
+            text-shadow: 0 1px 0 rgba(255,255,255,0.1);
+        }
+
+        .hardware-spec {
+            color: #666;
+            font-size: 9px;
+            margin-bottom: 10px;
+            letter-spacing: 1px;
+            font-family: 'Courier New', monospace;
+        }
+
+        #screen-bezel {
+            background-color: #222;
+            padding: 15px 20px;
+            border-radius: 5px 5px 20px 5px;
+            box-shadow: inset 0 0 15px rgba(0,0,0,0.8);
+            margin-bottom: 15px;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        /* The Screen */
+        #screen-viewport {
+            width: 480px;
+            height: 320px;
+            background-color: var(--screen-bg);
+            border: 3px solid #111;
+            position: relative;
+            overflow: hidden;
+            box-shadow: inset 2px 2px 5px rgba(0,0,0,0.4);
+            transition: width 0.3s, height 0.3s;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+            image-rendering: pixelated;
+            position: absolute;
+            top: 0; left: 0;
+            z-index: 10;
+        }
+
+        .scanlines {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 4px, 6px 100%;
+            pointer-events: none;
+            z-index: 100;
+            opacity: 1;
+            transition: opacity 0.3s;
+        }
+        .scanlines.hidden { opacity: 0; }
+
+        /* --- CONTROLS --- */
+        .controls-area { width: 100%; padding: 0 10px; box-sizing: border-box; }
+        .controls-hint { font-size: 10px; text-align: center; opacity: 0.5; margin-top: 5px; }
+        .key {
+            display: inline-block;
+            background: #333;
+            border-bottom: 2px solid #111;
+            border-radius: 4px;
+            padding: 4px 8px;
+            margin: 2px;
+            font-weight: bold;
+            color: white;
+            font-size: 10px;
+        }
+
+        /* --- UI OVERLAYS --- */
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+            box-sizing: border-box;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            color: var(--screen-pixel);
+            z-index: 60;
+            background-color: var(--screen-bg);
+        }
+
+        #menu-list li { padding: 5px; cursor: pointer; border: 1px solid transparent; }
+        #menu-list li:hover { background-color: rgba(0,0,0,0.05); }
+
+        /* Modal for Input */
+        #modal-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 200;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+        }
+        textarea {
+            width: 90%; height: 50%;
+            background: #222; color: #bbb;
+            border: 1px solid #444;
+            font-family: monospace;
+            font-size: 10px;
+            padding: 5px;
+            resize: none;
+        }
+        .modal-buttons { display:flex; gap:10px; margin-top:10px; }
+        .modal-btn {
+            padding: 8px 15px;
+            background: #444; color: white; border: none; cursor: pointer;
+            font-family: 'Courier New', monospace; font-weight: bold; font-size: 10px;
+        }
+        .modal-btn:hover { background: #555; }
+    </style>
+</head>
+<body>
+
+    <div id="line-player-case">
+        <div class="brand-logo">Z-Line Player</div>
+        <div class="hardware-spec">LINE128 Z80 CHIP | LGC GPU | VIRTUAL KERNEL</div>
+        
+        <div id="screen-bezel">
+            <div id="screen-viewport">
+                <canvas id="gameCanvas" width="128" height="96"></canvas>
+                <div class="scanlines" id="scanlines"></div>
+                
+                <div id="ui-layer">
+                    <div id="z80-registers" style="font-size: 8px; color: rgba(17, 17, 17, 0.8); border-bottom: 1px dashed currentColor; padding-bottom: 2px; margin-bottom: 4px; display: flex; justify-content: space-between;">
+                        <span id="reg-af">AF:0000</span>
+                        <span id="reg-bc">BC:0000</span>
+                        <span id="reg-de">DE:0000</span>
+                        <span id="reg-hl">HL:0000</span>
+                        <span id="reg-pc">PC:0100</span>
+                    </div>
+
+                    <div style="border-bottom: 2px solid currentColor; margin-bottom: 5px; display:flex; justify-content:space-between;">
+                        <span>Line Vm V1.0 (Native Z80)</span>
+                        <span id="clock">12:00</span>
+                    </div>
+                    <ul id="menu-list" style="list-style:none; padding:0; flex-grow:1; overflow-y:auto; margin:0;">
+                    </ul>
+                    <div style="font-size:0.8em; opacity:0.8; border-top:1px solid currentColor; padding-top:2px;">
+                        NAV: D-PAD | SEL: Z | OPT: C | BACK: ESC
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="controls-area">
+            <div class="controls-hint">
+                <span class="key"><span class="t-btn" data-key="up">↑</span><span class="t-btn" data-key="down">↓</span><span class="t-btn" data-key="left">←</span><span class="t-btn" data-key="right">→</span></span> LOOK &nbsp;
+                <span class="key"><span class="t-btn" data-key="w">W</span><span class="t-btn" data-key="a_key">A</span><span class="t-btn" data-key="s">S</span><span class="t-btn" data-key="d">D</span></span> MOVE &nbsp;
+                <span class="key t-btn" data-key="space">SPACE</span> JUMP &nbsp;
+                <span class="key t-btn" data-key="a">Z</span> A &nbsp;
+                <span class="key t-btn" data-key="b">X</span> B &nbsp;
+                <span class="key t-btn" data-key="y">Y</span> Y &nbsp;
+                <span class="key t-btn" data-key="c">C</span> OPT &nbsp;
+                <span class="key t-btn" data-key="back">ESC</span> BACK
+            </div>
+            <div style="text-align:center; font-size:9px; color:#666; margin-top:5px;">
+                True Native Line OS - Hardware Limits Active
+            </div>
+        </div>
+        
+        <input type="file" id="file-loader" style="display:none;" accept=".txt,.lmf,.lmt,.ch8,.ch81,.bas,.lmv,.lmp">
+        <input type="file" id="ls-loader" style="display:none;" accept=".ls">
+        <input type="file" id="media-loader" style="display:none;" accept="video/mp4,video/webm,image/png,image/jpeg,image/gif">
+        <video id="hidden-video" style="display:none;" muted playsinline></video>
+        <img id="hidden-image" style="display:none;">
+        <canvas id="hidden-canvas" width="128" height="96" style="display:none;"></canvas>
+    </div>
+
+    <div id="modal-overlay">
+        <div id="modal-title" style="color:white; font-family:sans-serif; margin-bottom:10px; font-weight:bold;"></div>
+        <textarea id="modal-input" placeholder="..."></textarea>
+        <div class="modal-buttons">
+            <button class="modal-btn" id="modal-action-btn-1">ACTION 1</button>
+            <button class="modal-btn" id="modal-action-btn-2" style="display:none;">ACTION 2</button>
+            <button class="modal-btn" onclick="closeModal()">CLOSE</button>
+        </div>
+        <div id="modal-status" style="color:#0f0; font-family:monospace; margin-top:10px; line-height:1.2; text-align:center;"></div>
+    </div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const uiLayer = document.getElementById('ui-layer');
+const menuList = document.getElementById('menu-list');
+const videoElement = document.getElementById('hidden-video');
+const imageElement = document.getElementById('hidden-image');
+const offscreenCanvas = document.getElementById('hidden-canvas');
+const offCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+
+// --- LINE128 Z80 HARDWARE CHIP ---
+// Re-engineered from Sharp LR35902. Detached from Nintendo MMU.
+const _line128_regBuf = new ArrayBuffer(12);
+const _line128_reg8 = new Uint8Array(_line128_regBuf);
+const _line128_reg16 = new Uint16Array(_line128_regBuf);
+
+const LINE128_CHIP = {
+    clock:{t:0}, ime:0, halt:0, _eiDelay: false,
+    memory: new Uint8Array(65536), // 64KB Z80 RAM
+    _ie:0, _if:0, _doubleSpeed:false, _key1:0,
+
+    r: {
+        get f() { return _line128_reg8[0]; }, set f(v) { _line128_reg8[0] = v & 0xF0; },
+        get a() { return _line128_reg8[1]; }, set a(v) { _line128_reg8[1] = v; },
+        get af() { return _line128_reg16[0]; }, set af(v) { _line128_reg16[0] = v & 0xFFF0; },
+        get c() { return _line128_reg8[2]; }, set c(v) { _line128_reg8[2] = v; },
+        get b() { return _line128_reg8[3]; }, set b(v) { _line128_reg8[3] = v; },
+        get bc() { return _line128_reg16[1]; }, set bc(v) { _line128_reg16[1] = v; },
+        get e() { return _line128_reg8[4]; }, set e(v) { _line128_reg8[4] = v; },
+        get d() { return _line128_reg8[5]; }, set d(v) { _line128_reg8[5] = v; },
+        get de() { return _line128_reg16[2]; }, set de(v) { _line128_reg16[2] = v; },
+        get l() { return _line128_reg8[6]; }, set l(v) { _line128_reg8[6] = v; },
+        get h() { return _line128_reg8[7]; }, set h(v) { _line128_reg8[7] = v; },
+        get hl() { return _line128_reg16[3]; }, set hl(v) { _line128_reg16[3] = v; },
+        get sp() { return _line128_reg16[4]; }, set sp(v) { _line128_reg16[4] = v; },
+        get pc() { return _line128_reg16[5]; }, set pc(v) { _line128_reg16[5] = v; }
+    },
+
+    rb: function(a) { return this.memory[a]; },
+    wb: function(a,v) { this.memory[a] = v; },
+    rw: function(a) { return this.rb(a)|(this.rb(a+1)<<8); },
+    ww: function(a,v) { this.wb(a, v&0xFF); this.wb(a+1, v>>8); },
+
+    init: function() { 
+        this.r.af = 0x01B0; this.r.bc = 0x0013; this.r.de = 0x00D8; this.r.hl = 0x014D; 
+        this.r.sp = 0xFFFE; this.r.pc = 0x0100;
+        this.ime=0; this.halt=0; this._eiDelay=false;
+        this.memory.fill(0);
+        
+        // Z80 Background processing routine to simulate OS execution hardware cycles
+        this.memory[0x0100] = 0x3C; // INC A
+        this.memory[0x0101] = 0x03; // INC BC
+        this.memory[0x0102] = 0x13; // INC DE
+        this.memory[0x0103] = 0x23; // INC HL
+        this.memory[0x0104] = 0x18; // JR
+        this.memory[0x0105] = 0xFA; // -6
+    },
+
+    step: function() {
+        if (this._eiDelay) { this.ime = 1; this._eiDelay = false; }
+        if(this.halt) { this.clock.t=4; if(this._ie&this._if)this.halt=0; else this.halt=0; return; }
+        
+        let op=this.rb(this.r.pc++); this.clock.t=4; let r=this.r; let t=0;
+        
+        const add=n=>{let a=r.a;let res=a+n;r.f=(res&255?0:128)|((a^n^res)&16?32:0)|(res>255?16:0);r.a=res&255;}
+        const adc=n=>{let a=r.a;let c=(r.f&16)?1:0;let res=a+n+c;r.f=(res&255?0:128)|((a^n^res)&16?32:0)|(res>255?16:0);r.a=res&255;}
+        const sub=n=>{let a=r.a;let res=a-n;r.f=(res===0?128:0)|64|(((a&0xF)<(n&0xF))?32:0)|(res<0?16:0);r.a=res&0xFF;}
+        const sbc=n=>{let a=r.a;let c=(r.f&16)?1:0;let res=a-n-c;r.f=(res&0xFF?0:128)|64|(((a&0xF)-(n&0xF)-c)<0?32:0)|(res<0?16:0);r.a=res&0xFF;}
+        const and=n=>{r.a&=n;r.f=(r.a?0:128)|32;}
+        const or=n=>{r.a|=n;r.f=(r.a?0:128);}
+        const xor=n=>{r.a^=n;r.f=(r.a?0:128);}
+        const cp=n=>{let res=r.a-n;r.f=(res===0?128:0)|64|(((r.a&0xF)<(n&0xF))?32:0)|(res<0?16:0);}
+        const inc=n=>{let res=(n+1)&255;r.f=(r.f&16)|(res?0:128)|((res&15)?0:32);return res;}
+        const dec=n=>{let res=(n-1)&255;r.f=(r.f&16)|64|(res?0:128)|((res&15)==15?32:0);return res;}
+        const add16=(v)=>{let hl=r.hl;let res=hl+v;r.f=(r.f&128)|((hl^v^(res&65535))&4096?32:0)|(res>65535?16:0);r.hl=res&0xFFFF;this.clock.t+=4;}
+
+        switch(op){
+            case 0x00:break;
+            case 0x01:r.bc=this.rw(r.pc);r.pc+=2;this.clock.t+=8;break;
+            case 0x02:this.wb(r.bc,r.a);this.clock.t+=4;break;case 0x03:r.bc=(r.bc+1)&65535;this.clock.t+=4;break;case 0x04:r.b=inc(r.b);break;case 0x05:r.b=dec(r.b);break;case 0x06:r.b=this.rb(r.pc++);this.clock.t+=4;break;case 0x07:{let c=r.a>>7;r.a=((r.a<<1)|c)&255;r.f=(r.f&0)|(c?16:0);break;}
+            case 0x08:t=this.rw(r.pc);r.pc+=2;this.ww(t,r.sp);this.clock.t+=16;break;
+            case 0x09:add16(r.bc);break;
+            case 0x0A:r.a=this.rb(r.bc);this.clock.t+=4;break;case 0x0B:r.bc=(r.bc-1)&65535;this.clock.t+=4;break;case 0x0C:r.c=inc(r.c);break;case 0x0D:r.c=dec(r.c);break;case 0x0E:r.c=this.rb(r.pc++);this.clock.t+=4;break;case 0x0F:{let c=r.a&1;r.a=(r.a>>1)|(c<<7);r.f=(r.f&0)|(c?16:0);break;}
+            case 0x10:if(this._key1){this._doubleSpeed=!this._doubleSpeed;this._key1=0;}else{this.halt=1;}r.pc++;break; 
+            case 0x11:r.de=this.rw(r.pc);r.pc+=2;this.clock.t+=8;break;
+            case 0x12:this.wb(r.de,r.a);this.clock.t+=4;break;case 0x13:r.de=(r.de+1)&65535;this.clock.t+=4;break;case 0x14:r.d=inc(r.d);break;case 0x15:r.d=dec(r.d);break;case 0x16:r.d=this.rb(r.pc++);this.clock.t+=4;break;case 0x17:{let c=r.a>>7;r.a=((r.a<<1)|((r.f&16)?1:0))&255;r.f=(r.f&0)|(c?16:0);break;}case 0x18:t=this.rb(r.pc++);if(t>127)t-=256;r.pc+=t;this.clock.t+=8;break;
+            case 0x19:add16(r.de);break;
+            case 0x1A:r.a=this.rb(r.de);this.clock.t+=4;break;case 0x1B:r.de=(r.de-1)&65535;this.clock.t+=4;break;case 0x1C:r.e=inc(r.e);break;case 0x1D:r.e=dec(r.e);break;case 0x1E:r.e=this.rb(r.pc++);this.clock.t+=4;break;case 0x1F:{let c=r.a&1;r.a=(r.a>>1)|((r.f&16)?128:0);r.f=(r.f&0)|(c?16:0);break;}
+            case 0x20:t=this.rb(r.pc++);if(t>127)t-=256;if(!(r.f&128)){r.pc+=t;this.clock.t+=4;}break;
+            case 0x21:r.hl=this.rw(r.pc);r.pc+=2;this.clock.t+=8;break;
+            case 0x22:this.wb(r.hl,r.a);r.hl=(r.hl+1)&65535;this.clock.t+=4;break;case 0x23:r.hl=(r.hl+1)&65535;this.clock.t+=4;break;case 0x24:r.h=inc(r.h);break;case 0x25:r.h=dec(r.h);break;case 0x26:r.h=this.rb(r.pc++);this.clock.t+=4;break;
+            case 0x27: { let a = r.a; if(!(r.f&64)) { if((r.f&32)||(a&0xF)>9) a+=0x06; if((r.f&16)||a>0x99) { a+=0x60; r.f|=16; } } else { if(r.f&32) a=(a-6)&0xFF; if(r.f&16) a=(a-0x60)&0xFF; } r.f &= ~(32|128); if((a&0xFF)===0) r.f|=128; r.a=a&0xFF; } break;
+            case 0x28:t=this.rb(r.pc++);if(t>127)t-=256;if(r.f&128){r.pc+=t;this.clock.t+=4;}break;
+            case 0x29:add16(r.hl);break;
+            case 0x2A:r.a=this.rb(r.hl);r.hl=(r.hl+1)&65535;this.clock.t+=4;break;case 0x2B:r.hl=(r.hl-1)&65535;this.clock.t+=4;break;case 0x2C:r.l=inc(r.l);break;case 0x2D:r.l=dec(r.l);break;case 0x2E:r.l=this.rb(r.pc++);this.clock.t+=4;break;case 0x2F:r.a^=255;r.f|=96;break;
+            case 0x30:t=this.rb(r.pc++);if(t>127)t-=256;if(!(r.f&16)){r.pc+=t;this.clock.t+=4;}break;
+            case 0x31:r.sp=this.rw(r.pc);r.pc+=2;this.clock.t+=8;break;
+            case 0x32:this.wb(r.hl,r.a);r.hl=(r.hl-1)&65535;this.clock.t+=4;break;case 0x33:r.sp=(r.sp+1)&65535;this.clock.t+=4;break;case 0x34:this.wb(r.hl,inc(this.rb(r.hl)));this.clock.t+=8;break;case 0x35:this.wb(r.hl,dec(this.rb(r.hl)));this.clock.t+=8;break;case 0x36:this.wb(r.hl,this.rb(r.pc++));this.clock.t+=8;break;case 0x37:r.f=(r.f&128)|16;break;case 0x38:t=this.rb(r.pc++);if(t>127)t-=256;if(r.f&16){r.pc+=t;this.clock.t+=4;}break;
+            case 0x39:add16(r.sp);break;
+            case 0x3A:r.a=this.rb(r.hl);r.hl=(r.hl-1)&65535;this.clock.t+=4;break;case 0x3B:r.sp=(r.sp-1)&65535;this.clock.t+=4;break;case 0x3C:r.a=inc(r.a);break;case 0x3D:r.a=dec(r.a);break;case 0x3E:r.a=this.rb(r.pc++);this.clock.t+=4;break;case 0x3F:r.f=(r.f&128)|((r.f&16)?0:16);break;
+            case 0x76:this.halt=1;break;
+            case 0x40:break;case 0x41:r.b=r.c;break;case 0x42:r.b=r.d;break;case 0x43:r.b=r.e;break;case 0x44:r.b=r.h;break;case 0x45:r.b=r.l;break;case 0x46:r.b=this.rb(r.hl);this.clock.t+=4;break;case 0x47:r.b=r.a;break;case 0x48:r.c=r.b;break;case 0x49:break;case 0x4A:r.c=r.d;break;case 0x4B:r.c=r.e;break;case 0x4C:r.c=r.h;break;case 0x4D:r.c=r.l;break;case 0x4E:r.c=this.rb(r.hl);this.clock.t+=4;break;case 0x4F:r.c=r.a;break;
+            case 0x50:r.d=r.b;break;case 0x51:r.d=r.c;break;case 0x52:break;case 0x53:r.d=r.e;break;case 0x54:r.d=r.h;break;case 0x55:r.d=r.l;break;case 0x56:r.d=this.rb(r.hl);this.clock.t+=4;break;case 0x57:r.d=r.a;break;case 0x58:r.e=r.b;break;case 0x59:r.e=r.c;break;case 0x5A:r.e=r.d;break;case 0x5B:break;case 0x5C:r.e=r.h;break;case 0x5D:r.e=r.l;break;case 0x5E:r.e=this.rb(r.hl);this.clock.t+=4;break;case 0x5F:r.e=r.a;break;
+            case 0x60:r.h=r.b;break;case 0x61:r.h=r.c;break;case 0x62:r.h=r.d;break;case 0x63:r.h=r.e;break;case 0x64:break;case 0x65:r.h=r.l;break;case 0x66:r.h=this.rb(r.hl);this.clock.t+=4;break;case 0x67:r.h=r.a;break;case 0x68:r.l=r.b;break;case 0x69:r.l=r.c;break;case 0x6A:r.l=r.d;break;case 0x6B:r.l=r.e;break;case 0x6C:r.l=r.h;break;case 0x6D:break;case 0x6E:r.l=this.rb(r.hl);this.clock.t+=4;break;case 0x6F:r.l=r.a;break;
+            case 0x70:this.wb(r.hl,r.b);this.clock.t+=4;break;case 0x71:this.wb(r.hl,r.c);this.clock.t+=4;break;case 0x72:this.wb(r.hl,r.d);this.clock.t+=4;break;case 0x73:this.wb(r.hl,r.e);this.clock.t+=4;break;case 0x74:this.wb(r.hl,r.h);this.clock.t+=4;break;case 0x75:this.wb(r.hl,r.l);this.clock.t+=4;break;case 0x77:this.wb(r.hl,r.a);this.clock.t+=4;break;case 0x78:r.a=r.b;break;case 0x79:r.a=r.c;break;case 0x7A:r.a=r.d;break;case 0x7B:r.a=r.e;break;case 0x7C:r.a=r.h;break;case 0x7D:r.a=r.l;break;case 0x7E:r.a=this.rb(r.hl);this.clock.t+=4;break;case 0x7F:break;
+            case 0x80:add(r.b);break;case 0x81:add(r.c);break;case 0x82:add(r.d);break;case 0x83:add(r.e);break;case 0x84:add(r.h);break;case 0x85:add(r.l);break;case 0x86:add(this.rb(r.hl));this.clock.t+=4;break;case 0x87:add(r.a);break;case 0x88:adc(r.b);break;case 0x89:adc(r.c);break;case 0x8A:adc(r.d);break;case 0x8B:adc(r.e);break;case 0x8C:adc(r.h);break;case 0x8D:adc(r.l);break;case 0x8E:adc(this.rb(r.hl));this.clock.t+=4;break;case 0x8F:adc(r.a);break;
+            case 0x90:sub(r.b);break;case 0x91:sub(r.c);break;case 0x92:sub(r.d);break;case 0x93:sub(r.e);break;case 0x94:sub(r.h);break;case 0x95:sub(r.l);break;case 0x96:sub(this.rb(r.hl));this.clock.t+=4;break;case 0x97:sub(r.a);break;case 0x98:sbc(r.b);break;case 0x99:sbc(r.c);break;case 0x9A:sbc(r.d);break;case 0x9B:sbc(r.e);break;case 0x9C:sbc(r.h);break;case 0x9D:sbc(r.l);break;case 0x9E:sbc(this.rb(r.hl));this.clock.t+=4;break;case 0x9F:sbc(r.a);break;
+            case 0xA0:and(r.b);break;case 0xA1:and(r.c);break;case 0xA2:and(r.d);break;case 0xA3:and(r.e);break;case 0xA4:and(r.h);break;case 0xA5:and(r.l);break;case 0xA6:and(this.rb(r.hl));this.clock.t+=4;break;case 0xA7:and(r.a);break;case 0xA8:xor(r.b);break;case 0xA9:xor(r.c);break;case 0xAA:xor(r.d);break;case 0xAB:xor(r.e);break;case 0xAC:xor(r.h);break;case 0xAD:xor(r.l);break;case 0xAE:xor(this.rb(r.hl));this.clock.t+=4;break;case 0xAF:xor(r.a);break;
+            case 0xB0:or(r.b);break;case 0xB1:or(r.c);break;case 0xB2:or(r.d);break;case 0xB3:or(r.e);break;case 0xB4:or(r.h);break;case 0xB5:or(r.l);break;case 0xB6:or(this.rb(r.hl));this.clock.t+=4;break;case 0xB7:or(r.a);break;case 0xB8:cp(r.b);break;case 0xB9:cp(r.c);break;case 0xBA:cp(r.d);break;case 0xBB:cp(r.e);break;case 0xBC:cp(r.h);break;case 0xBD:cp(r.l);break;case 0xBE:cp(this.rb(r.hl));this.clock.t+=4;break;case 0xBF:cp(r.a);break;
+            case 0xC0:if(!(r.f&128)){r.pc=this.rw(r.sp);r.sp+=2;this.clock.t+=16;}else this.clock.t+=4;break;case 0xC1:r.c=this.rb(r.sp++);r.b=this.rb(r.sp++);this.clock.t+=8;break;case 0xC2:t=this.rw(r.pc);r.pc+=2;if(!(r.f&128)){r.pc=t;this.clock.t+=12;}else this.clock.t+=8;break;case 0xC3:r.pc=this.rw(r.pc);this.clock.t+=12;break;case 0xC4:t=this.rw(r.pc);r.pc+=2;if(!(r.f&128)){this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=t;this.clock.t+=20;}else this.clock.t+=8;break;case 0xC5:this.wb(r.sp-1,r.b);this.wb(r.sp-2,r.c);r.sp-=2;this.clock.t+=12;break;case 0xC6:add(this.rb(r.pc++));this.clock.t+=4;break;case 0xC7:this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=0x00;this.clock.t+=12;break;case 0xC8:if(r.f&128){r.pc=this.rw(r.sp);r.sp+=2;this.clock.t+=16;}else this.clock.t+=4;break;case 0xC9:r.pc=this.rw(r.sp);r.sp+=2;this.clock.t+=12;break;case 0xCA:t=this.rw(r.pc);r.pc+=2;if(r.f&128){r.pc=t;this.clock.t+=12;}else this.clock.t+=8;break;
+            case 0xCB:{
+                let cb=this.rb(r.pc++),v,i=cb&7;
+                if(i==0)v=r.b;else if(i==1)v=r.c;else if(i==2)v=r.d;else if(i==3)v=r.e;else if(i==4)v=r.h;else if(i==5)v=r.l;else if(i==6)v=this.rb(r.hl);else v=r.a;
+                let bit=(cb>>3)&7,res=v;
+                if(cb<0x40){
+                    if(cb<0x08){let c=v>>7;res=((v<<1)|c)&255;r.f=(res?0:128)|(c?16:0);}else if(cb<0x10){let c=v&1;res=(v>>1)|(c<<7);r.f=(res?0:128)|(c?16:0);}else if(cb<0x18){let c=v>>7;res=((v<<1)|((r.f&16)?1:0))&255;r.f=(res?0:128)|(c?16:0);}else if(cb<0x20){let c=v&1;res=(v>>1)|((r.f&16)?128:0);r.f=(res?0:128)|(c?16:0);}else if(cb<0x28){let c=v>>7;res=(v<<1)&255;r.f=(res?0:128)|(c?16:0);}else if(cb<0x30){let c=v&1;res=v>>1|(v&128);r.f=(res?0:128)|(c?16:0);}else if(cb<0x38){let c=v>>7;res=(v<<4)|(v>>4);r.f=(res?0:128);}else{let c=v&1;res=v>>1;r.f=(res?0:128)|(c?16:0);}
+                }else if(cb<0x80){r.f=(r.f&16)|32|((v&(1<<bit))?0:128);this.clock.t+=(i==6?12:8);return;}else if(cb<0xC0){res=v&~(1<<bit);}else{res=v|(1<<bit);}
+                if(i==0)r.b=res;else if(i==1)r.c=res;else if(i==2)r.d=res;else if(i==3)r.e=res;else if(i==4)r.h=res;else if(i==5)r.l=res;else if(i==6)this.wb(r.hl,res);else r.a=res;
+                this.clock.t+=(i==6?12:4);return;
+            }
+            case 0xCC:t=this.rw(r.pc);r.pc+=2;if(r.f&128){this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=t;this.clock.t+=20;}else this.clock.t+=8;break;case 0xCD:this.ww(r.sp-2,r.pc+2);r.sp-=2;r.pc=this.rw(r.pc);this.clock.t+=20;break;case 0xCE:adc(this.rb(r.pc++));this.clock.t+=4;break;case 0xCF:this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=0x08;this.clock.t+=12;break;
+            case 0xD0:if(!(r.f&16)){r.pc=this.rw(r.sp);r.sp+=2;this.clock.t+=16;}else this.clock.t+=4;break;case 0xD1:r.e=this.rb(r.sp++);r.d=this.rb(r.sp++);this.clock.t+=8;break;case 0xD2:t=this.rw(r.pc);r.pc+=2;if(!(r.f&16)){r.pc=t;this.clock.t+=12;}else this.clock.t+=8;break;case 0xD4:t=this.rw(r.pc);r.pc+=2;if(!(r.f&16)){this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=t;this.clock.t+=20;}else this.clock.t+=8;break;case 0xD5:this.wb(r.sp-1,r.d);this.wb(r.sp-2,r.e);r.sp-=2;this.clock.t+=12;break;case 0xD6:sub(this.rb(r.pc++));this.clock.t+=4;break;case 0xD7:this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=0x10;this.clock.t+=12;break;case 0xD8:if(r.f&16){r.pc=this.rw(r.sp);r.sp+=2;this.clock.t+=16;}else this.clock.t+=4;break;case 0xD9:r.pc=this.rw(r.sp);r.sp+=2;this.clock.t+=12;this.ime=1;break;case 0xDA:t=this.rw(r.pc);r.pc+=2;if(r.f&16){r.pc=t;this.clock.t+=12;}else this.clock.t+=8;break;case 0xDC:t=this.rw(r.pc);r.pc+=2;if(r.f&16){this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=t;this.clock.t+=20;}else this.clock.t+=8;break;case 0xDE:sbc(this.rb(r.pc++));this.clock.t+=4;break;case 0xDF:this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=0x18;this.clock.t+=12;break;
+            case 0xE0:this.wb(0xFF00+this.rb(r.pc++),r.a);this.clock.t+=8;break;case 0xE1:r.l=this.rb(r.sp++);r.h=this.rb(r.sp++);this.clock.t+=8;break;case 0xE2:this.wb(0xFF00+r.c,r.a);this.clock.t+=4;break;case 0xE5:this.wb(r.sp-1,r.h);this.wb(r.sp-2,r.l);r.sp-=2;this.clock.t+=12;break;case 0xE6:and(this.rb(r.pc++));this.clock.t+=4;break;case 0xE7:this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=0x20;this.clock.t+=12;break;
+            case 0xE8:{
+                let i=this.rb(r.pc++); let off=(i>127)?i-256:i; let sp=r.sp;
+                let h=((sp&0xF)+(i&0xF))>0xF; let c=((sp&0xFF)+(i&0xFF))>0xFF;
+                r.sp=(sp+off)&0xFFFF; r.f=(h?32:0)|(c?16:0); this.clock.t+=16; 
+            }break;
+            case 0xE9:r.pc=r.hl;break;case 0xEA:this.wb(this.rw(r.pc),r.a);r.pc+=2;this.clock.t+=12;break;case 0xEE:xor(this.rb(r.pc++));this.clock.t+=4;break;case 0xEF:this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=0x28;this.clock.t+=12;break;
+            case 0xF0:r.a=this.rb(0xFF00+this.rb(r.pc++));this.clock.t+=8;break;case 0xF1:t=this.rb(r.sp++);r.f=t&0xF0;r.a=this.rb(r.sp++);this.clock.t+=8;break;case 0xF2:r.a=this.rb(0xFF00+r.c);this.clock.t+=4;break;
+            case 0xF3:this.ime=0;break;
+            case 0xF5:this.wb(r.sp-1,r.a);this.wb(r.sp-2,r.f);r.sp-=2;this.clock.t+=12;break;case 0xF6:or(this.rb(r.pc++));this.clock.t+=4;break;case 0xF7:this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=0x30;this.clock.t+=12;break;
+            case 0xF8:{
+                let i=this.rb(r.pc++); let off=(i>127)?i-256:i; let sp=r.sp;
+                let h=((sp&0xF)+(i&0xF))>0xF; let c=((sp&0xFF)+(i&0xFF))>0xFF;
+                let res=(sp+off)&0xFFFF; r.hl=res; r.f=(h?32:0)|(c?16:0); this.clock.t+=12;
+            }break;
+            case 0xF9:r.sp=r.hl;this.clock.t+=4;break;case 0xFA:r.a=this.rb(this.rw(r.pc));r.pc+=2;this.clock.t+=12;break;
+            case 0xFB:this._eiDelay=true;break; 
+            case 0xFE:cp(this.rb(r.pc++));this.clock.t+=4;break;case 0xFF:this.ww(r.sp-2,r.pc);r.sp-=2;r.pc=0x38;this.clock.t+=12;break;
+        }
+    }
+};
+LINE128_CHIP.init();
+
+// --- OS KERNELS ---
+const TRUE_KERNEL_8CHIPI = {
+    v: new Uint8Array(16), i: 0, sp: 0, pc: 0x0200, state: 'HALT',
+    appRegistry: {}, keys: {}, sysFlags: { locked: false },
+    sysCall_Exec: function(name, payload, callback) {
+        if (this.sysFlags.locked) { SYSTEM.panic("SYS: KERNEL LOCKED."); return; }
+        this.state = 'RUNNING'; if (callback) callback();
+    },
+    sysCall_Yield: function() {
+        SYSTEM.state = 'OS'; SYSTEM.activeApp = null; this.state = 'HALT';
+        if (uiLayer) uiLayer.style.display = 'flex'; LGC.clear();
+    },
+    verifyPayload: function(payload) { return payload && payload.includes("SYS_CALL:0x"); }
+};
+
+const TRUE_KERNEL_CH81 = {
+    memory: new Uint8Array(65536), v: new Uint8Array(8), pc: 0x0200, state: 'HALT', keys: {}, flags: { Z: 0 },
+    init: function() { this.memory.fill(0); this.v.fill(0); this.pc = 0x0200; this.state = 'HALT'; this.flags.Z = 0; },
+    cycle: function() {
+        if(this.state !== 'RUNNING') return;
+        let op = this.memory[this.pc]; let mem = this.memory; let v = this.v;
+        switch(op) {
+            case 0x01: v[mem[this.pc+1]] = mem[this.pc+2]; this.pc += 3; break; 
+            case 0x02: v[mem[this.pc+1]] = v[mem[this.pc+2]]; this.pc += 3; break; 
+            case 0x03: { let p = mem[this.pc+1]*2; v[p] = mem[this.pc+2]; v[p+1] = mem[this.pc+3]; this.pc += 4; } break; 
+            case 0x04: { let p = mem[this.pc+2]*2; v[mem[this.pc+1]] = mem[(v[p]<<8) | v[p+1]]; this.pc += 3; } break; 
+            case 0x05: { let p = mem[this.pc+1]*2; mem[(v[p]<<8) | v[p+1]] = v[mem[this.pc+2]]; this.pc += 3; } break; 
+            case 0x06: { let p = mem[this.pc+1]*2; let addr = ((v[p]<<8) | v[p+1]) + 1; v[p] = (addr>>8)&0xFF; v[p+1] = addr&0xFF; this.pc += 2; } break; 
+            case 0x10: { let r1=mem[this.pc+1], r2=mem[this.pc+2]; v[r1] = (v[r1]+v[r2])&0xFF; this.pc += 3; } break; 
+            case 0x11: { let r1=mem[this.pc+1], val=mem[this.pc+2]; v[r1] = (v[r1]+val)&0xFF; this.pc += 3; } break; 
+            case 0x12: { let r1=mem[this.pc+1], r2=mem[this.pc+2]; v[r1] = (v[r1]-v[r2])&0xFF; this.pc += 3; } break; 
+            case 0x20: this.pc = (mem[this.pc+1]<<8) | mem[this.pc+2]; break; 
+            case 0x21: if(this.flags.Z) { this.pc = (mem[this.pc+1]<<8) | mem[this.pc+2]; } else { this.pc += 3; } break; 
+            case 0x30: this.flags.Z = (v[mem[this.pc+1]] === mem[this.pc+2]) ? 1 : 0; this.pc += 3; break; 
+            case 0x60: { 
+                let mask = (inputs.up?1:0)|(inputs.down?2:0)|(inputs.left?4:0)|(inputs.right?8:0)|(inputs.a?16:0)|(inputs.b?32:0)|(inputs.y?64:0)|(inputs.c?128:0);
+                v[mem[this.pc+1]] = mask; this.pc += 2;
+            } break;
+            case 0xC0: { let r1=mem[this.pc+1], m=mem[this.pc+2]; v[r1] = Math.floor(Math.random()*256) & m; this.pc += 3; } break; 
+            case 0xE0: this.state = 'WAIT_FRAME'; this.pc += 1; break; 
+            case 0xE1: LGC.clear(); this.pc += 1; break; 
+            case 0xE2: { let cIdx = v[mem[this.pc+1]] & 0x0F; LGC.setColor(LMV_COLORS_HEX[cIdx]); this.pc += 2; } break; 
+            case 0xE3: LGC.rect(v[mem[this.pc+1]], v[mem[this.pc+2]], 1, 1); this.pc += 3; break; 
+            case 0xE4: LGC.text(String.fromCharCode(mem[this.pc+1]), v[mem[this.pc+2]], v[mem[this.pc+3]]); this.pc += 4; break; 
+            case 0xE5: LGC.rect(v[mem[this.pc+1]], v[mem[this.pc+2]], v[mem[this.pc+3]], v[mem[this.pc+4]]); this.pc += 5; break; 
+            case 0xE6: { 
+                let p = mem[this.pc+1]*2; let rx=v[mem[this.pc+2]], ry=v[mem[this.pc+3]], rw=v[mem[this.pc+4]];
+                let addr = (v[p]<<8) | v[p+1]; let str = "";
+                while(mem[addr] !== 0 && str.length < 4000) { str += String.fromCharCode(mem[addr]); addr++; }
+                LGC.drawLMV(str, rx, ry, rw, true, 1); this.pc += 5;
+            } break;
+            case 0xFF: this.state = 'HALT'; this.pc += 1; break; 
+            default: this.state = 'HALT'; console.warn(`CH81 KERNEL PANIC: 0x${op.toString(16)}`); break;
+        }
+    },
+    loadROM: function(hexStr) {
+        this.init();
+        for(let i=0; i<hexStr.length; i+=2) this.memory[0x0200 + (i/2)] = parseInt(hexStr.substring(i, i+2), 16);
+        this.state = 'RUNNING';
+    }
+};
+
+function launch8Chipi() { SYSTEM.notification = "8CHIPI KERNEL ACTIVE"; SYSTEM.notifTimer = 180; }
+function launchCH81() { SYSTEM.notification = "CH81 KERNEL ACTIVE"; SYSTEM.notifTimer = 180; }
+function updateCH81() { 
+    if(TRUE_KERNEL_CH81.state === 'WAIT_FRAME') TRUE_KERNEL_CH81.state = 'RUNNING';
+    let cycles = 0;
+    while(TRUE_KERNEL_CH81.state === 'RUNNING' && cycles < 1000) { 
+        TRUE_KERNEL_CH81.cycle();
+        cycles++;
+    }
+}
+function renderCH81() {}
+
+function fallbackCopyTextToClipboard(text) {
+    let textArea = document.createElement("textarea");
+    textArea.value = text; textArea.style.position = "fixed"; 
+    document.body.appendChild(textArea); textArea.focus(); textArea.select();
+    try { document.execCommand('copy'); } catch (err) {}
+    document.body.removeChild(textArea);
+}
+
+function triggerDownload(filename, content) {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.style.display = 'none'; a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); document.body.removeChild(a);
+}
+
+const LMV_PALETTE = [
+    [0,0,0], [85,85,85], [170,170,170], [255,255,255], [255,0,0], [0,255,0], [0,0,255], [255,255,0], 
+    [0,255,255], [255,0,255], [255,128,0], [128,0,255], [128,64,0], [255,128,128], [128,255,0], [0,128,255] 
+];
+const LMV_COLORS_HEX = [
+    "#000000", "#555555", "#AAAAAA", "#FFFFFF", "#FF0000", "#00FF00", "#0000FF", "#FFFF00",
+    "#00FFFF", "#FF00FF", "#FF8000", "#8000FF", "#804000", "#FF8080", "#80FF00", "#0080FF"
+];
+
+let MEDIA_MAKER_STATE = { frames: [], capturing: false, lastTime: 0, resultPayload: "", frameCount: 0, isVideo: false, appName: "" };
+let MEDIA_PROMPT_STATE = { title: "", ext: "", payload: "", cursor: 0, options: ["PLAY / VIEW", "SAVE TO LIBRARY", "DOWNLOAD FILE", "COPY CODE"] };
+const INSTALLED_MEDIA = []; 
+
+const LGC = {
+    ctx: null, width: 128, height: 96, color: "#111111", fontStr: "10px monospace", drawCalls: 0,
+    init: function(context) { this.ctx = context; this.updateDims(); },
+    updateDims: function() { this.width = 128; this.height = 96; },
+    setColor: function(c) { this.color = c; this.ctx.fillStyle = c; this.ctx.strokeStyle = c; },
+    setFont: function(f) { this.fontStr = f; this.ctx.font = f; },
+    checkLimit: function() { this.drawCalls++; if (this.drawCalls > 4500) { SYSTEM.panic("THIS FILE EXCEEDS DRAW CALL LIMIT"); throw "LGC_LIMIT_EXCEEDED"; } },
+    clear: function() { 
+        if (!this.ctx) return;
+        this.ctx.setTransform(1, 0, 0, 1, 0, 0); this.ctx.filter = SYSTEM.colorMode ? "none" : "grayscale(100%)";
+        this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height); 
+        this.ctx.fillStyle = this.color; this.ctx.fillRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height); 
+        this.ctx.scale(this.ctx.canvas.width / 128, this.ctx.canvas.height / 96);
+    },
+    rawRect: function(x, y, w, h) { this.ctx.fillRect(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h)); },
+    rect: function(x, y, w, h) { this.checkLimit(); this.ctx.fillRect(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h)); },
+    strokeRect: function(x, y, w, h) { this.checkLimit(); this.ctx.strokeRect(Math.floor(x)+0.5, Math.floor(y)+0.5, Math.floor(w), Math.floor(h)); },
+    text: function(txt, x, y) { this.checkLimit(); this.ctx.fillText(txt, Math.round(x), Math.round(y)); },
+    measureText: function(txt) { return this.ctx.measureText(txt); },
+    circle: function(x, y, r) { this.checkLimit(); this.ctx.beginPath(); this.ctx.arc(x, y, r, 0, Math.PI*2); this.ctx.stroke(); },
+    fillCircle: function(x, y, r) { this.checkLimit(); this.ctx.beginPath(); this.ctx.arc(x, y, r, 0, Math.PI*2); this.ctx.fill(); },
+    arcFill: function(x, y, r, start, end) { this.checkLimit(); this.ctx.beginPath(); this.ctx.arc(x,y,r,start,end); this.ctx.lineTo(x,y); this.ctx.fill(); },
+    line: function(x1, y1, x2, y2) { this.checkLimit(); this.ctx.beginPath(); this.ctx.moveTo(Math.round(x1)+0.5,Math.round(y1)+0.5); this.ctx.lineTo(Math.round(x2)+0.5,Math.round(y2)+0.5); this.ctx.stroke(); },
+    save: function() { this.ctx.save(); }, restore: function() { this.ctx.restore(); },
+    translate: function(x,y) { this.ctx.translate(x,y); }, rotate: function(rad) { this.ctx.rotate(rad); },
+    scale: function(x,y) { this.ctx.scale(x,y); }, clearRect: function(x,y,w,h) { this.ctx.clearRect(x,y,w,h); },
+    ditherRect: function(x, y, w, h, pattern) {
+        this.checkLimit(); this.ctx.fillStyle = this.color;
+        for (let i = 0; i < w; i++) for (let j = 0; j < h; j++) {
+            let draw = false;
+            if (pattern === 0 && (i + j) % 2 === 0) draw = true; if (pattern === 1 && j % 2 === 0) draw = true; if (pattern === 2 && i % 2 === 0) draw = true;
+            if (draw) this.ctx.fillRect(Math.floor(x+i), Math.floor(y+j), 1, 1);
+        }
+    },
+    glitchEffect: function(x, y, w, h) {
+        this.checkLimit(); let slices = Math.floor(Math.random() * 5) + 2;
+        for(let i=0; i<slices; i++) {
+            let sy = y + Math.random() * h; let sh = Math.random() * (h / 4); let ox = (Math.random() - 0.5) * 10;
+            this.ctx.drawImage(this.ctx.canvas, x, sy, w, sh, x + ox, sy, w, sh);
+        }
+    },
+    // NEW CUSTOM LGC CAPABILITIES FOR NATIVE 8-BIT DEV
+    setPixel: function(x, y) { this.checkLimit(); this.ctx.fillRect(Math.floor(x), Math.floor(y), 1, 1); },
+    fillTriangle: function(x1, y1, x2, y2, x3, y3) {
+        this.checkLimit(); this.ctx.beginPath(); this.ctx.moveTo(Math.floor(x1), Math.floor(y1));
+        this.ctx.lineTo(Math.floor(x2), Math.floor(y2)); this.ctx.lineTo(Math.floor(x3), Math.floor(y3)); this.ctx.fill();
+    },
+    strokeTriangle: function(x1, y1, x2, y2, x3, y3) {
+        this.checkLimit(); this.ctx.beginPath(); this.ctx.moveTo(Math.floor(x1)+0.5, Math.floor(y1)+0.5);
+        this.ctx.lineTo(Math.floor(x2)+0.5, Math.floor(y2)+0.5); this.ctx.lineTo(Math.floor(x3)+0.5, Math.floor(y3)+0.5);
+        this.ctx.closePath(); this.ctx.stroke();
+    },
+    outlineText: function(txt, x, y, outlineColor) {
+        this.checkLimit(); let prevColor = this.ctx.fillStyle; this.ctx.fillStyle = outlineColor;
+        this.ctx.fillText(txt, Math.round(x)-1, Math.round(y)); this.ctx.fillText(txt, Math.round(x)+1, Math.round(y));
+        this.ctx.fillText(txt, Math.round(x), Math.round(y)-1); this.ctx.fillText(txt, Math.round(x), Math.round(y)+1);
+        this.ctx.fillStyle = prevColor; this.ctx.fillText(txt, Math.round(x), Math.round(y));
+    },
+    invertRect: function(x, y, w, h) {
+        this.checkLimit(); this.ctx.save(); this.ctx.globalCompositeOperation = 'difference';
+        this.ctx.fillStyle = 'white'; this.ctx.fillRect(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h));
+        this.ctx.restore();
+    },
+    screenShake: function(intensity) {
+        this.checkLimit(); let dx = (Math.random() - 0.5) * intensity; let dy = (Math.random() - 0.5) * intensity;
+        this.ctx.translate(dx, dy);
+    },
+    drawSprite: function(x, y, hexData, w, h, ignoreBlack = true, scale = 1) {
+        if (!hexData) return; this.checkLimit(); const pW = this.width / 128; const pH = this.height / 96; let ptr = 0;
+        for (let j = 0; j < h; j++) {
+            for (let i = 0; i < w; i++) {
+                if (ptr >= hexData.length) break;
+                let cIdx = parseInt(hexData[ptr], 16);
+                if (!(ignoreBlack && cIdx === 0) && !isNaN(cIdx)) {
+                    this.ctx.fillStyle = LMV_COLORS_HEX[cIdx];
+                    this.rawRect((x + i * scale) * pW, (y + j * scale) * pH, scale * pW, scale * pH);
+                } ptr++;
+            }
+        } this.ctx.fillStyle = this.color; 
+    },
+    fillPolygon: function(pts) {
+        if (!pts || pts.length < 6) return; this.checkLimit();
+        this.ctx.beginPath(); this.ctx.moveTo(Math.floor(pts[0]), Math.floor(pts[1]));
+        for (let i = 2; i < pts.length; i += 2) this.ctx.lineTo(Math.floor(pts[i]), Math.floor(pts[i+1]));
+        this.ctx.closePath(); this.ctx.fill();
+    },
+    strokePolygon: function(pts) {
+        if (!pts || pts.length < 6) return; this.checkLimit();
+        this.ctx.beginPath(); this.ctx.moveTo(Math.floor(pts[0])+0.5, Math.floor(pts[1])+0.5);
+        for (let i = 2; i < pts.length; i += 2) this.ctx.lineTo(Math.floor(pts[i])+0.5, Math.floor(pts[i+1])+0.5);
+        this.ctx.closePath(); this.ctx.stroke();
+    },
+    ditherPolygon: function(pts, pattern) {
+        if (!pts || pts.length < 6) return; this.checkLimit();
+        this.ctx.save();
+        this.ctx.beginPath(); this.ctx.moveTo(Math.floor(pts[0]), Math.floor(pts[1]));
+        for (let i = 2; i < pts.length; i += 2) this.ctx.lineTo(Math.floor(pts[i]), Math.floor(pts[i+1]));
+        this.ctx.closePath(); this.ctx.clip();
+        let minX = pts[0], maxX = pts[0], minY = pts[1], maxY = pts[1];
+        for(let i=2; i<pts.length; i+=2) {
+            if(pts[i] < minX) minX = pts[i]; if(pts[i] > maxX) maxX = pts[i];
+            if(pts[i+1] < minY) minY = pts[i+1]; if(pts[i+1] > maxY) maxY = pts[i+1];
+        }
+        this.ditherRect(minX, minY, maxX - minX, maxY - minY, pattern);
+        this.ctx.restore();
+    },
+    drawRetroVector: function(x, y, scale, rot, pts) {
+        if (!pts || pts.length < 4) return; this.checkLimit();
+        this.ctx.save(); this.ctx.translate(Math.floor(x), Math.floor(y)); this.ctx.rotate(rot);
+        this.ctx.beginPath(); this.ctx.moveTo(Math.floor(pts[0]*scale)+0.5, Math.floor(pts[1]*scale)+0.5);
+        for (let i = 2; i < pts.length; i += 2) this.ctx.lineTo(Math.floor(pts[i]*scale)+0.5, Math.floor(pts[i+1]*scale)+0.5);
+        this.ctx.stroke(); this.ctx.restore();
+    },
+    project3D: function(x, y, z, fov = 100, camZ = 0) {
+        let dz = z - camZ; if (dz <= 0) return null; let scale = fov / dz;
+        return { x: 64 + (x * scale), y: 48 + (y * scale), scale: scale };
+    },
+    drawLMV: function(frameStr, startX = 0, startY = 0, drawWidth = 128, ignoreBlack = false, scale = 1) {
+        if (!frameStr) return; this.checkLimit();
+        let parts = frameStr.split(','); let ptr = 0; const pW = this.width / 128; const pH = this.height / 96;
+        for(let p of parts) {
+            if(!p) continue;
+            let cIdx = parseInt(p[0], 16); let count = parseInt(p.substring(1), 16); let isTransp = ignoreBlack && cIdx === 0;
+            if (!isTransp) this.ctx.fillStyle = LMV_COLORS_HEX[cIdx];
+            while(count > 0) {
+                let x = ptr % drawWidth; let y = Math.floor(ptr / drawWidth);
+                let spaceLeftInRow = drawWidth - x; let drawLen = Math.min(count, spaceLeftInRow);
+                if (!isTransp) this.rawRect((startX + x * scale) * pW, (startY + y * scale) * pH, drawLen * scale * pW, scale * pH);
+                ptr += drawLen; count -= drawLen;
+            }
+        }
+        this.ctx.fillStyle = this.color; 
+    }
+};
+
+const SYSTEM = {
+    resolution: 0, dpi: 140, advRefresh: false, scanlines: true, colorMode: false, zilogRam: 64, crtRam: 128,
+    state: 'OS', menuIdx: 0, activeApp: null, clipboard: "", gamepadConnected: false, notification: "", notifTimer: 0, panicMsg: "",
+    panic: function(msg) { this.state = 'ACCESS_DENIED'; this.panicMsg = msg; }
+};
+
+const LINE_STORAGE = {
+    sig: "CH81_LS_VM_SIG_V1",
+    init: function() {
+        let data = localStorage.getItem('ZLINE_OS_STORAGE');
+        if (data && !data.startsWith(this.sig)) { console.warn("KERNEL: Unauthorized un-signed local storage."); localStorage.removeItem('ZLINE_OS_STORAGE'); }
+    },
+    save: function(key, value) {
+        let current = this.loadAll() || {}; current[key] = value;
+        let finalSave = this.sig + ":" + btoa(JSON.stringify(current));
+        localStorage.setItem('ZLINE_OS_STORAGE_BAK', finalSave);
+        let count = 0; for(let i=0; i<localStorage.length; i++) if (localStorage.key(i).startsWith('ZLINE_OS_STORAGE')) count++;
+        if (count > 2) {
+            let toDelete = [];
+            for(let i=0; i<localStorage.length; i++) { let k = localStorage.key(i); if (k.startsWith('ZLINE_OS_STORAGE') && k !== 'ZLINE_OS_STORAGE') toDelete.push(k); }
+            toDelete.forEach(k => localStorage.removeItem(k));
+        }
+        localStorage.setItem('ZLINE_OS_STORAGE', finalSave); localStorage.removeItem('ZLINE_OS_STORAGE_BAK'); 
+    },
+    load: function(key) { let all = this.loadAll(); return all ? all[key] : null; },
+    loadAll: function() {
+        let raw = localStorage.getItem('ZLINE_OS_STORAGE');
+        if (!raw || !raw.startsWith(this.sig)) return null;
+        try { return JSON.parse(atob(raw.split(':')[1])); } catch(e) { return null; }
+    },
+    delete: function() { localStorage.removeItem('ZLINE_OS_STORAGE'); },
+    exportStr: function() { return localStorage.getItem('ZLINE_OS_STORAGE') || ""; },
+    importStr: function(str) { if(str && str.startsWith(this.sig)) { localStorage.setItem('ZLINE_OS_STORAGE', str); return true; } return false; }
+};
+LINE_STORAGE.init();
+
+// --- GLOBALS: Progression Lock & Anti-Cheat APIs ---
+window.progression_save_data = function(lockId, dataObj) {
+    let dataStr = typeof dataObj === 'string' ? dataObj : JSON.stringify(dataObj);
+    // Generate an 8-digit deterministic tamper-evident hash
+    let h = 0;
+    for(let i=0; i<dataStr.length; i++) {
+        h = ((h << 5) - h) + dataStr.charCodeAt(i);
+        h |= 0;
+    }
+    let hash8 = Math.abs(h).toString().padStart(8, '1').substring(0, 8);
+    
+    LINE_STORAGE.save("PROG_" + lockId, {
+        data: dataObj,
+        hash: hash8
+    });
+};
+
+window.progression_lock = function(lockId) {
+    let payload = LINE_STORAGE.load("PROG_" + lockId);
+    if (!payload) return { locked: true, data: null };
+    
+    let dataStr = typeof payload.data === 'string' ? payload.data : JSON.stringify(payload.data);
+    let h = 0;
+    for(let i=0; i<dataStr.length; i++) {
+        h = ((h << 5) - h) + dataStr.charCodeAt(i);
+        h |= 0;
+    }
+    let expectedHash = Math.abs(h).toString().padStart(8, '1').substring(0, 8);
+    
+    if (payload.hash !== expectedHash) {
+        // Anti-cheat triggered: append '9' to permanently brick the tampered save
+        payload.hash = payload.hash + "9"; 
+        LINE_STORAGE.save("PROG_" + lockId, payload);
+        SYSTEM.panic("PROGRESSION LOCK: INVALID OR TAMPERED 8-DIGIT SAVE HASH.");
+        return { locked: true, error: true };
+    }
+    return { locked: false, data: payload.data };
+};
+
+// --- GLOBALS: Line Language Pre-Processor ---
+window.applyLineLanguage = function(content) {
+    // Dynamically replace native JS keywords with Line Language variants upon loading
+    if (content.includes('[ENGINE SOURCE CODE]')) {
+        return content.replace(/\[ENGINE SOURCE CODE\]([\s\S]*?)\[\/ENGINE SOURCE CODE\]/gi, (match, innerCode) => {
+            let converted = innerCode
+                .replace(/\bconst\b/g, 'section')
+                .replace(/\bFunction\b/g, 'collect')
+                .replace(/\bfunction\b/g, 'collect')
+                .replace(/\blet\b/g, 'allow');
+            return '[ENGINE SOURCE CODE]' + converted + '[/ENGINE SOURCE CODE]';
+        });
+    }
+    return content;
+};
+
+const INSTALLED_APPS = [];
+let APP_INFO_DISPLAY = null;
+
+function launchMediaMaker() { TRUE_KERNEL_8CHIPI.sysCall_Exec('MEDIA_MAKER', null, () => { SYSTEM.state = 'MEDIA_MAKER'; uiLayer.style.display = 'none'; MEDIA_MAKER_STATE.frames = []; MEDIA_MAKER_STATE.capturing = false; }); }
+function launchMediaPrompt(title, ext, payload) { TRUE_KERNEL_8CHIPI.sysCall_Exec('MEDIA_PROMPT', null, () => { SYSTEM.state = 'MEDIA_PROMPT'; uiLayer.style.display = 'none'; MEDIA_PROMPT_STATE.title = title; MEDIA_PROMPT_STATE.ext = ext.toUpperCase(); MEDIA_PROMPT_STATE.payload = payload; MEDIA_PROMPT_STATE.cursor = 0; }); }
+
+const MENUS = {
+    MAIN: [
+        { label: "LINE LIBRARY", action: () => loadMenu('GAMES') }, { label: "MEDIA LIBRARY", action: () => loadMenu('MEDIA') },
+        { label: "APP: MEDIA MAKER", action: () => launchMediaMaker() }, { label: "APP: Z80-CALC", action: () => launchCalculator() },
+        { label: "APP: INSTALL SCRIPT", action: () => launchNativeInstaller() }, { label: "APP: Z80 TERMINAL", action: () => launchTerminal() },
+        { label: "APP: DELETE CODE", action: () => launchAppManager() }, { label: "APP: LMT/LMF INDEX", action: () => launchLMFIndex() },
+        { label: "HARDWARE SETTINGS", action: () => loadMenu('SETTINGS') }
+    ],
+    GAMES: [ { label: "BACK", action: () => loadMenu('MAIN') } ], MEDIA: [ { label: "BACK", action: () => loadMenu('MAIN') } ],
+    SETTINGS: [
+        { label: "KERNEL: 8CHIPI VM", action: () => launch8Chipi() }, { label: "KERNEL: CH81 (8-BIT ASM)", action: () => launchCH81() },
+        { label: () => `LGC RES: ${['128p','240p','360p'][SYSTEM.resolution]}`, action: () => toggleRes() }, { label: () => `LGC DPI: ${SYSTEM.dpi}`, action: () => toggleDpi() },
+        { label: () => `CHIP: ${SYSTEM.advRefresh ? 'CRT ('+SYSTEM.crtRam+'KB)' : 'LINE128 Z80 ('+SYSTEM.zilogRam+'KB)'}`, action: () => toggleRefresh() },
+        { label: () => `CRT SCANLINES: ${SYSTEM.scanlines ? 'ON' : 'OFF'}`, action: () => toggleScanlines() }, { label: () => `GRAPHICS: ${SYSTEM.colorMode ? 'LGC-COLOR' : 'LGC-MONO'}`, action: () => toggleColor() },
+        { label: "BACK", action: () => loadMenu('MAIN') }
+    ]
+};
+let currentMenu = 'MAIN';
+
+function boot() {
+    LGC.init(canvas.getContext('2d', { willReadFrequently: true })); applySettings(); updateClock(); setInterval(updateClock, 1000); refreshLibrary(); loadMenu('MAIN'); requestAnimationFrame(mainLoop); 
+}
+function updateClock() { const d = new Date(); const clockEl = document.getElementById('clock'); if (clockEl) clockEl.innerText = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; }
+function updateZ80Regs() {
+    const hex = (num, pad) => num.toString(16).padStart(pad, '0').toUpperCase();
+    
+    // UI actively reads from the raw LINE128 Z80 register buffer
+    document.getElementById('reg-af').innerText = `AF:${hex(LINE128_CHIP.r.af, 4)}`;
+    document.getElementById('reg-bc').innerText = `BC:${hex(LINE128_CHIP.r.bc, 4)}`;
+    document.getElementById('reg-de').innerText = `DE:${hex(LINE128_CHIP.r.de, 4)}`;
+    document.getElementById('reg-hl').innerText = `HL:${hex(LINE128_CHIP.r.hl, 4)}`;
+    document.getElementById('reg-pc').innerText = `PC:${hex(LINE128_CHIP.r.pc, 4)}`;
+}
+
+function loadMenu(menuName) { currentMenu = menuName; SYSTEM.menuIdx = 0; renderMenu(); }
+function renderMenu() {
+    menuList.innerHTML = ''; const items = MENUS[currentMenu];
+    items.forEach((item, idx) => {
+        const li = document.createElement('li'); let text = (typeof item.label === 'function') ? item.label() : item.label;
+        if (idx === SYSTEM.menuIdx) { li.style.backgroundColor = 'rgba(17, 17, 17, 0.2)'; li.style.border = '1px dashed #111'; li.innerText = `> ${text}`; } 
+        else { li.innerText = `  ${text}`; }
+        li.addEventListener('click', () => { SYSTEM.menuIdx = idx; renderMenu(); setTimeout(() => item.action(), 100); });
+        menuList.appendChild(li);
+    });
+}
+
+function applySettings() {
+    if (SYSTEM.resolution === 0) { canvas.width = 128; canvas.height = 96; } else if (SYSTEM.resolution === 1) { canvas.width = 256; canvas.height = 192; } else { canvas.width = 512; canvas.height = 384; }
+    LGC.updateDims(); const scale = SYSTEM.dpi / 140;
+    document.getElementById('screen-viewport').style.width = `${480 * scale}px`; document.getElementById('screen-viewport').style.height = `${360 * scale}px`;
+    uiLayer.style.fontSize = `${12 * scale}px`;
+    const sl = document.getElementById('scanlines'); if(SYSTEM.scanlines) sl.classList.remove('hidden'); else sl.classList.add('hidden');
+}
+function toggleRes() { SYSTEM.resolution = (SYSTEM.resolution + 1) % 3; applySettings(); renderMenu(); }
+function toggleDpi() { SYSTEM.dpi += 40; if(SYSTEM.dpi > 300) SYSTEM.dpi=60; applySettings(); renderMenu(); }
+function toggleRefresh() { SYSTEM.advRefresh = !SYSTEM.advRefresh; renderMenu(); }
+function toggleScanlines() { SYSTEM.scanlines = !SYSTEM.scanlines; applySettings(); renderMenu(); }
+function toggleColor() { SYSTEM.colorMode = !SYSTEM.colorMode; applySettings(); renderMenu(); }
+
+function refreshLibrary() {
+    MENUS.GAMES = [{ label: "BACK", action: () => loadMenu('MAIN') }];
+    INSTALLED_APPS.forEach(app => { MENUS.GAMES.push({ label: `${app.title.toUpperCase()}`, appData: app, action: () => triggerLMTBoot(app) }); });
+    MENUS.MEDIA = [{ label: "BACK", action: () => loadMenu('MAIN') }];
+    INSTALLED_MEDIA.forEach(media => { MENUS.MEDIA.push({ label: `${media.title.toUpperCase()}`, appData: media, action: () => launchMediaPrompt(media.title, media.ext, media.payload) }); });
+}
+
+const CALC = { history: [], line: "" };
+function launchCalculator() { TRUE_KERNEL_8CHIPI.sysCall_Exec('CALC', null, () => { SYSTEM.state = 'CALC'; uiLayer.style.display = 'none'; CALC.line = ""; CALC.history = ["Z80-CALC v2.0", "KERNEL AUTH: OK", "Ready."]; }); }
+function renderCalculator() {
+    LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); LGC.setColor(SYSTEM.colorMode ? "#000" : "#111");
+    const fontSize = 10; LGC.setFont(`bold ${fontSize}px monospace`);
+    const lineHeight = fontSize + 4; const maxLines = Math.floor(LGC.height / lineHeight) - 1; let startY = 14;
+    CALC.history.slice(-maxLines).forEach(line => { LGC.text(line, 5, startY); startY += lineHeight; });
+    LGC.text(`> ${CALC.line}${Math.floor(Date.now() / 500) % 2 === 0 ? "█" : " "}`, 5, startY);
+}
+
+window.compileBASICtoCH81 = function(code) {
+    let lines = code.split('\n').map(l => l.trim().toUpperCase()).filter(l => l.length > 0); let bytecode = []; let labels = {}; let unresolvedJumps = []; let offset = 0x0200; 
+    const getReg = (v) => { if(v>='A' && v<='G') return v.charCodeAt(0) - 65; return 0; };
+    const supportedCmds = ['CLS', 'UPDATE', 'HALT', 'LET', 'ADD', 'SUB', 'PSET', 'DRAW', 'GOTO', 'IF', 'RND', 'KEY', 'COL', 'RECT', 'LMV'];
+    for(let line of lines) {
+        let parts = line.split(/\s+/); let lineNum = parseInt(parts[0]);
+        if (!isNaN(lineNum)) { labels[lineNum] = offset; parts.shift(); }
+        if (parts.length === 0) continue;
+        let cmd = parts[0]; if (!supportedCmds.includes(cmd)) throw new Error(`UNSUPPORTED KEYWORD: ${cmd}`);
+        if (cmd === 'CLS') { bytecode.push(0xE1); offset += 1; } else if (cmd === 'UPDATE') { bytecode.push(0xE0); offset += 1; } else if (cmd === 'HALT') { bytecode.push(0xFF); offset += 1; } 
+        else if (cmd === 'LET') { let reg = getReg(parts[1]); let val = parts[3]; if (val >= 'A' && val <= 'G') { bytecode.push(0x02, reg, getReg(val)); offset += 3; } else { bytecode.push(0x01, reg, parseInt(val)&0xFF); offset += 3; } } 
+        else if (cmd === 'ADD') { let reg = getReg(parts[1].replace(',','')); let val = parts[2]; if (val >= 'A' && val <= 'G') { bytecode.push(0x10, reg, getReg(val)); offset += 3; } else { bytecode.push(0x11, reg, parseInt(val)&0xFF); offset += 3; } } 
+        else if (cmd === 'SUB') { let reg = getReg(parts[1].replace(',','')); let reg2 = getReg(parts[2]); bytecode.push(0x12, reg, reg2); offset += 3; } 
+        else if (cmd === 'PSET') { let rx = getReg(parts[1].replace(',','')); let ry = getReg(parts[2]); bytecode.push(0xE3, rx, ry); offset += 3; } 
+        else if (cmd === 'DRAW') { let char = parts[1].replace(/["',]/g, ''); let rx = getReg(parts[2].replace(',','')); let ry = getReg(parts[3]); bytecode.push(0xE4, char.charCodeAt(0), rx, ry); offset += 4; } 
+        else if (cmd === 'GOTO') { let target = parseInt(parts[1]); bytecode.push(0x20, 0x00, 0x00); unresolvedJumps.push({ idx: bytecode.length - 2, target: target }); offset += 3; } 
+        else if (cmd === 'IF') { let reg = getReg(parts[1]); let val = parseInt(parts[3]); let target = parseInt(parts[5]); bytecode.push(0x30, reg, val&0xFF); offset += 3; bytecode.push(0x21, 0x00, 0x00); unresolvedJumps.push({ idx: bytecode.length - 2, target: target }); offset += 3; } 
+        else if (cmd === 'RND') { let reg = getReg(parts[1].replace(',','')); let mask = parseInt(parts[2]); bytecode.push(0xC0, reg, mask&0xFF); offset += 3; } 
+        else if (cmd === 'KEY') { let reg = getReg(parts[1]); bytecode.push(0x60, reg); offset += 2; }
+        else if (cmd === 'COL') { let reg = getReg(parts[1]); bytecode.push(0xE2, reg); offset += 2; }
+        else if (cmd === 'RECT') { let rx = getReg(parts[1].replace(',','')); let ry = getReg(parts[2].replace(',','')); let rw = getReg(parts[3].replace(',','')); let rh = getReg(parts[4]); bytecode.push(0xE5, rx, ry, rw, rh); offset += 5; }
+        else if (cmd === 'LMV') { let p = parseInt(parts[1].replace(',','')); let rx = getReg(parts[2].replace(',','')); let ry = getReg(parts[3].replace(',','')); let rw = getReg(parts[4]); bytecode.push(0xE6, p, rx, ry, rw); offset += 5; }
+    }
+    for (let jmp of unresolvedJumps) { let addr = labels[jmp.target]; if (addr !== undefined) { bytecode[jmp.idx] = (addr >> 8) & 0xFF; bytecode[jmp.idx + 1] = addr & 0xFF; } }
+    return bytecode.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join('');
+};
+
+function processRawAppBlock(blockStr) {
+    let b = blockStr; if (!b.trim()) return null;
+    let runMatch = b.match(/run\(\s*([a-zA-Z0-9_]+)\s*\)/);
+    
+    // Custom LMV Graphics Overwrite Command integration
+    // Resolves and applies the most recent custom LMV package
+    let lmvMatches = [...b.matchAll(/(?:lmv\.graphics\.custom\(\s*(\d*)\s*\)\s*)?\[LMV_PAYLOAD\]([\s\S]*?)\[\/LMV_PAYLOAD\]/gi)];
+    if (lmvMatches.length > 0) {
+        let bestMatch = lmvMatches[0];
+        let maxNum = -1;
+        for (let m of lmvMatches) {
+            let numStr = m[1];
+            let num = (numStr && numStr.trim() !== "") ? parseInt(numStr) : 0;
+            if (num >= maxNum) {
+                maxNum = num;
+                bestMatch = m;
+            }
+        }
+        let lmvCode = bestMatch[2].replace(/\s/g, '');
+        if (runMatch) { 
+            let cmd = runMatch[1].replace(/[^a-zA-Z0-9_]/g, ''); 
+            TRUE_KERNEL_8CHIPI.appRegistry[cmd] = "launchNativeLMV"; 
+            window[`__SYS_MEM_${cmd}`] = lmvCode; 
+        }
+        b = b.replace(/(?:lmv\.graphics\.custom\(\s*\d*\s*\)\s*)?\[LMV_PAYLOAD\][\s\S]*?\[\/LMV_PAYLOAD\]/gi, '');
+    }
+    
+    let lmpMatch = b.match(/\[LMP_PAYLOAD\]([\s\S]*?)\[\/LMP_PAYLOAD\]/);
+    if (lmpMatch) { 
+        let lmpCode = lmpMatch[1].replace(/\s/g, ''); 
+        if (runMatch) { 
+            let cmd = runMatch[1].replace(/[^a-zA-Z0-9_]/g, ''); 
+            TRUE_KERNEL_8CHIPI.appRegistry[cmd] = "launchNativeLMP"; 
+            window[`__SYS_MEM_${cmd}`] = lmpCode; 
+        } 
+        b = b.replace(lmpMatch[0], ''); 
+    }
+    
+    let ch81Match = b.match(/\[CH81_PAYLOAD\]([\s\S]*?)\[\/CH81_PAYLOAD\]/);
+    if (ch81Match) { 
+        let hexCode = ch81Match[1].replace(/\s/g, ''); 
+        if (runMatch) { 
+            let cmd = runMatch[1].replace(/[^a-zA-Z0-9_]/g, ''); 
+            TRUE_KERNEL_8CHIPI.appRegistry[cmd] = "launchNativeCH81"; 
+            window[`__SYS_MEM_${cmd}`] = hexCode; 
+        } 
+        b = b.replace(ch81Match[0], ''); 
+    }
+    
+    let scriptMatch = b.match(/\[ENGINE SOURCE CODE\]([\s\S]*?)\[\/ENGINE SOURCE CODE\]/);
+    if (scriptMatch) {
+        let safeCode = scriptMatch[1].replace(/\xA0/g, ' '); 
+        
+        // Revert Line Language keywords to native Javascript during Execution
+        safeCode = safeCode
+            .replace(/\bsection\b/g, 'const')
+            .replace(/\bcollect\b/g, 'function')
+            .replace(/\ballow\b/g, 'let');
+
+        if (safeCode.match(/width\s*[=:]\s*([2-9]\d{2,}|\d{4,})/i) || safeCode.match(/height\s*[=:]\s*([2-9]\d{2,}|\d{4,})/i) || safeCode.match(/requestAnimationFrame/i) || safeCode.match(/WebGL/i)) { SYSTEM.panic("GRAPHICS CAPABILITY LIMIT EXCEEDED. 128x96 MAX."); return null; }
+        let injectionSuccess = false; 
+        try { 
+            let scriptEl = document.createElement('script'); 
+            scriptEl.type = 'text/javascript'; 
+            scriptEl.textContent = safeCode; 
+            document.head.appendChild(scriptEl); 
+            injectionSuccess = true; 
+        } catch(e) {}
+        if (!injectionSuccess) { try { window.eval(safeCode); } catch(e) { } }
+        if (runMatch) { 
+            let cmd = runMatch[1].replace(/[^a-zA-Z0-9_]/g, ''); 
+            let funcMatch = safeCode.match(/window\.(launch[a-zA-Z0-9_]+)\s*=/i); 
+            let expectedFuncName = funcMatch ? funcMatch[1] : "launch" + cmd.replace("ROM_", "").charAt(0).toUpperCase() + cmd.replace("ROM_", "").slice(1).toLowerCase(); 
+            if (typeof window[expectedFuncName] === 'function') { TRUE_KERNEL_8CHIPI.appRegistry[cmd] = expectedFuncName; } 
+        }
+        b = b.replace(scriptMatch[0], ''); 
+    }
+    
+    let rawLines = b.split('\n'); let title = "Unknown App"; let label = "app"; let desc = "No description available."; let payloadLines = []; let headerParsed = false;
+    for (let i = 0; i < rawLines.length; i++) {
+        let l = rawLines[i].replace(/\r/g, '').replace(/\xA0/g, ' '); let tLine = l.trim();
+        if (!headerParsed && tLine.includes("(title)")) { let titleMatch = tLine.match(/^(.*?)\(title\)/i); let labelMatch = tLine.match(/\(title\)\((.*?)\)/i); if (titleMatch) title = titleMatch[1].trim(); if (labelMatch) label = labelMatch[1].trim(); headerParsed = true; continue; }
+        if (tLine.startsWith("description(")) { desc = tLine.substring(12, tLine.lastIndexOf(")")); continue; }
+        if (payloadLines.length === 0 && tLine === '') continue; payloadLines.push(l);
+    }
+    return { title, label, desc, payload: payloadLines.join('\n') };
+}
+
+function executeMediaPlayback(payload, type) {
+    TRUE_KERNEL_8CHIPI.sysCall_Exec('MEDIA_PLAYER', null, () => {
+        SYSTEM.state = 'APP'; let rawStr = payload.match(/\[LM[VP]_PAYLOAD\]([\s\S]*?)\[\/LM[VP]_PAYLOAD\]/); let frames = rawStr ? rawStr[1].replace(/\s/g, '').split('|').filter(f => f) : [];
+        SYSTEM.activeApp = {
+            frames: frames, frameIdx: 0, fpsTimer: 0, playing: type === 'LMV', isPicture: type === 'LMP',
+            update: function() {
+                if (inputs.back && !prevInputs.back) { TRUE_KERNEL_8CHIPI.sysCall_Yield(); return; }
+                if (!this.isPicture) {
+                    let actionPressed = (inputs.a && !prevInputs.a) || (inputs.b && !prevInputs.b) || (inputs.y && !prevInputs.y) || (inputs.c && !prevInputs.c);
+                    if (actionPressed) this.playing = !this.playing;
+                    if (this.playing) { this.fpsTimer++; if (this.fpsTimer > 6) { this.fpsTimer = 0; this.frameIdx++; if (this.frameIdx >= this.frames.length) this.frameIdx = 0; } } 
+                    else { if (inputs.left && !prevInputs.left) this.frameIdx = Math.max(0, this.frameIdx - 1); if (inputs.right && !prevInputs.right) this.frameIdx = Math.min(this.frames.length - 1, this.frameIdx + 1); }
+                }
+            },
+            render: function() {
+                LGC.setColor(SYSTEM.colorMode ? "#000" : "#111"); LGC.clear(); let fData = this.frames[this.frameIdx]; if (!fData) return;
+                let parts = fData.split(','); let ptr = 0; const pW = LGC.width/128; const pH = LGC.height/96;
+                for(let p of parts) {
+                    if(!p) continue; let cIdx = parseInt(p[0], 16); let count = parseInt(p.substring(1), 16); LGC.ctx.fillStyle = LMV_COLORS_HEX[cIdx];
+                    while(count > 0) { let x = ptr % 128; let y = Math.floor(ptr / 128); let spaceLeftInRow = 128 - x; let drawLen = Math.min(count, spaceLeftInRow); LGC.rawRect(x * pW, y * pH, drawLen * pW, pH); ptr += drawLen; count -= drawLen; }
+                }
+                LGC.ctx.fillStyle = LGC.color; 
+                if (!this.playing && !this.isPicture) { LGC.setColor("#FFF"); LGC.rect(0, 94, (this.frameIdx / Math.max(1, this.frames.length - 1)) * 128, 2); LGC.setFont("bold 8px monospace"); LGC.text("PAUSED", 2, 10); }
+            }
+        };
+        uiLayer.style.display = 'none'; LGC.updateDims();
+    });
+}
+
+window.launchNativeCH81 = function(payload) {
+    let cmdMatch = payload.match(/run\(\s*([a-zA-Z0-9_]+)\s*\)/);
+    if (cmdMatch) { let cmd = cmdMatch[1].replace(/[^a-zA-Z0-9_]/g, ''); let hexStr = window[`__SYS_MEM_${cmd}`]; if (hexStr) { TRUE_KERNEL_8CHIPI.sysCall_Exec('VM_CH81', null, () => { SYSTEM.state = 'APP'; SYSTEM.activeApp = { update: updateCH81, render: renderCH81 }; TRUE_KERNEL_CH81.state = 'RUNNING'; uiLayer.style.display = 'none'; LGC.updateDims(); TRUE_KERNEL_CH81.loadROM(hexStr); }); return; } }
+    SYSTEM.panic("CH81 PAYLOAD CORRUPTED OR MISSING.");
+};
+
+window.launchNativeLMV = function(payload) { executeMediaPlayback(payload, "LMV"); }
+window.launchNativeLMP = function(payload) { executeMediaPlayback(payload, "LMP"); }
+
+const INSTALLER_APP = { buffer: "", log: "AWAITING PAYLOAD...", options: ['LOAD FILE', 'PASTE (CLIP)', 'COPY (CLIP)', 'INSTALL', 'CLEAR'], cursor: 0 };
+function launchNativeInstaller() { TRUE_KERNEL_8CHIPI.sysCall_Exec('INSTALLER', null, () => { SYSTEM.state = 'INSTALLER'; uiLayer.style.display = 'none'; INSTALLER_APP.log = "AWAITING PAYLOAD..."; INSTALLER_APP.cursor = 0; }); }
+
+function executeInstallerAction() {
+    let opt = INSTALLER_APP.options[INSTALLER_APP.cursor];
+    if (opt === 'LOAD FILE') { document.getElementById('file-loader').value = ''; document.getElementById('file-loader').click(); }
+    else if (opt === 'PASTE (CLIP)') { 
+        try { 
+            if (navigator.clipboard && navigator.clipboard.readText) { 
+                navigator.clipboard.readText().then(clipText => { 
+                    INSTALLER_APP.buffer = window.applyLineLanguage(clipText); 
+                    INSTALLER_APP.log = "PASTED FROM SYSTEM CLIPBOARD."; 
+                }).catch(err => { 
+                    let p = prompt("Paste text here:"); 
+                    if (p) { INSTALLER_APP.buffer = window.applyLineLanguage(p); INSTALLER_APP.log = "PASTED VIA PROMPT."; } 
+                }); 
+            } else { 
+                let p = prompt("Paste text here:"); 
+                if (p) { INSTALLER_APP.buffer = window.applyLineLanguage(p); INSTALLER_APP.log = "PASTED VIA PROMPT."; } 
+            } 
+        } catch (err) { 
+            let p = prompt("Paste text here:"); 
+            if (p) { INSTALLER_APP.buffer = window.applyLineLanguage(p); INSTALLER_APP.log = "PASTED VIA PROMPT."; } 
+        }
+    }
+    else if (opt === 'COPY (CLIP)') { fallbackCopyTextToClipboard(INSTALLER_APP.buffer); INSTALLER_APP.log = "COPIED TO SYSTEM CLIPBOARD."; }
+    else if (opt === 'CLEAR') { INSTALLER_APP.buffer = ""; INSTALLER_APP.log = "BUFFER CLEARED."; } 
+    else if (opt === 'INSTALL') { processNativeInstall(); }
+}
+
+function updateNativeInstaller() {
+    if ((inputs.up || inputs.w) && !(prevInputs.up || prevInputs.w)) INSTALLER_APP.cursor = Math.max(0, INSTALLER_APP.cursor - 1);
+    if ((inputs.down || inputs.s) && !(prevInputs.down || prevInputs.s)) INSTALLER_APP.cursor = Math.min(INSTALLER_APP.options.length - 1, INSTALLER_APP.cursor + 1);
+    
+    let actionPressed = (inputs.a && !prevInputs.a) || (inputs.b && !prevInputs.b) || (inputs.y && !prevInputs.y) || (inputs.c && !prevInputs.c);
+    if (actionPressed) {
+        executeInstallerAction();
+    }
+}
+
+function renderNativeInstaller() {
+    LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); LGC.setColor(SYSTEM.colorMode ? "#000" : "#111");
+    LGC.setFont("bold 10px monospace"); LGC.text("NATIVE INSTALLER", 2, 10); LGC.line(0, 12, LGC.width, 12);
+    LGC.strokeRect(2, 15, LGC.width - 4, 30); LGC.setFont("8px monospace");
+    if (INSTALLER_APP.buffer.length > 0) { LGC.text(`[ ${INSTALLER_APP.buffer.length} BYTES IN VRAM ]`, 5, 23); let lines = INSTALLER_APP.buffer.split('\n').slice(0, 2); for(let i=0; i<lines.length; i++) LGC.text(lines[i].substring(0,25), 5, 33 + i*8); } else { LGC.text("[ EMPTY BUFFER ]", 5, 30); }
+    LGC.setFont("10px monospace"); for (let i=0; i < INSTALLER_APP.options.length; i++) { LGC.text((i === INSTALLER_APP.cursor ? "> " : "  ") + INSTALLER_APP.options[i], 5, 55 + i*8); }
+    LGC.setFont("8px monospace"); LGC.text(INSTALLER_APP.log, 2, LGC.height - 2);
+}
+
+function processNativeInstall() {
+    let content = INSTALLER_APP.buffer; if(!content || !content.trim()) { INSTALLER_APP.log = "ERR: BUFFER EMPTY."; return; }
+    if (content.includes("<html") || content.includes("<style") || content.includes("/>")) { INSTALLER_APP.log = "HTML DETECTED. AUTO-PATCHING..."; content = content.replace(/<[^>]*>?/gm, ''); }
+    let blocks = content.split(/={8,}/); let count = 0;
+    blocks.forEach(block => { let appData = processRawAppBlock(block); if (appData) { INSTALLED_APPS.push(appData); count++; } });
+    refreshLibrary(); INSTALLER_APP.log = `SUCCESS: ${count} APP(S) COMPILED.`; INSTALLER_APP.buffer = "";
+}
+
+const APP_MAN = { cursor: 0, selected: new Set(), offset: 0 };
+function launchAppManager() { TRUE_KERNEL_8CHIPI.sysCall_Exec('APP_MANAGER', null, () => { SYSTEM.state = 'APP_MANAGER'; uiLayer.style.display = 'none'; APP_MAN.cursor = 0; APP_MAN.selected.clear(); APP_MAN.offset = 0; }); }
+
+function executeAppManagerAction() {
+    if (INSTALLED_APPS.length === 0) return; 
+    if (APP_MAN.cursor < INSTALLED_APPS.length) { 
+        if (APP_MAN.selected.has(APP_MAN.cursor)) APP_MAN.selected.delete(APP_MAN.cursor); 
+        else APP_MAN.selected.add(APP_MAN.cursor); 
+    } 
+    else if (APP_MAN.cursor === INSTALLED_APPS.length) {
+        let newApps = []; for(let i=0; i<INSTALLED_APPS.length; i++) { if (!APP_MAN.selected.has(i)) newApps.push(INSTALLED_APPS[i]); }
+        INSTALLED_APPS.length = 0; INSTALLED_APPS.push(...newApps); APP_MAN.selected.clear(); APP_MAN.cursor = 0; refreshLibrary();
+    } 
+    else if (APP_MAN.cursor === INSTALLED_APPS.length + 1) { 
+        INSTALLED_APPS.length = 0; APP_MAN.selected.clear(); APP_MAN.cursor = 0; refreshLibrary(); 
+    }
+}
+
+function updateAppManager() {
+    let maxItems = INSTALLED_APPS.length > 0 ? INSTALLED_APPS.length + 2 : 1; 
+    if ((inputs.up || inputs.w) && !(prevInputs.up || prevInputs.w)) APP_MAN.cursor = Math.max(0, APP_MAN.cursor - 1); 
+    if ((inputs.down || inputs.s) && !(prevInputs.down || prevInputs.s)) APP_MAN.cursor = Math.min(maxItems - 1, APP_MAN.cursor + 1);
+    
+    let actionPressed = (inputs.a && !prevInputs.a) || (inputs.b && !prevInputs.b) || (inputs.y && !prevInputs.y) || (inputs.c && !prevInputs.c);
+    if (actionPressed) {
+        executeAppManagerAction();
+    }
+}
+
+function renderAppManager() {
+    LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); LGC.setColor(SYSTEM.colorMode ? "#000" : "#111");
+    LGC.setFont("bold 10px monospace"); LGC.text("MEM MANAGER (DEL CODE)", 2, 10); LGC.line(0, 12, LGC.width, 12);
+    LGC.setFont("10px monospace"); let y = 25; let displayLimit = 6;
+    if (INSTALLED_APPS.length === 0) { LGC.text("NO CUSTOM CODE FOUND.", 5, 30); return; }
+    if (APP_MAN.cursor < APP_MAN.offset) APP_MAN.offset = APP_MAN.cursor; if (APP_MAN.cursor >= APP_MAN.offset + displayLimit) APP_MAN.offset = APP_MAN.cursor - displayLimit + 1;
+    let renderCount = 0;
+    for(let i = APP_MAN.offset; i < INSTALLED_APPS.length && renderCount < displayLimit; i++) {
+        let prefix = (i === APP_MAN.cursor ? ">" : " "); let check = APP_MAN.selected.has(i) ? "[X]" : "[ ]";
+        LGC.text(`${prefix}${check} ${INSTALLED_APPS[i].title.substring(0, 10)}`, 2, y); y += 10; renderCount++;
+    }
+    if (renderCount < displayLimit && APP_MAN.offset <= INSTALLED_APPS.length) {
+        let idx = INSTALLED_APPS.length;
+        if (idx >= APP_MAN.offset && renderCount < displayLimit) { LGC.text((APP_MAN.cursor === idx ? "> " : "  ") + "DELETE SELECTED", 2, y); y+=10; renderCount++; }
+        idx++;
+        if (idx >= APP_MAN.offset && renderCount < displayLimit) { LGC.text((APP_MAN.cursor === idx ? "> " : "  ") + "DELETE ALL", 2, y); y+=10; renderCount++; }
+    }
+}
+
+const INDEX_TEXT = [ "LINE MEDIA FORMAT (LMF)", "OS VER: 2.0 (VM EDITION)", "CHIPS: LINE128 Z80 & LGC", "KERNEL: 8CHIPI VIRTUAL CPU", "KERNEL: CH81 8-BIT ASM", "-----------------------", "Line OS utilizes a custom scripting", "language explicitly authorized by", "the KERNEL prior to execution.", "", "** CH81 BASIC & ASM **", "Compiled basic utilizes CH81 VRAM.", "NEW LMV CMD: LMV Pair, X, Y, W", "Pair=0-3(HL,DE,BC,AF memory ptr)", "NEW DRAW CMD: RECT X, Y, W, H", "NEW COL CMD: COL Reg (0-15 hex)", "UPDATE command yields frame.", "", "** KERNEL VERIFICATION **", "All game code MUST include an", "official hardcoded SYS_CALL", "signature to run (e.g.,", "SYS_CALL:0x88A1 or 0x99B2).", "Unsigned code will trigger a", "KERNEL PANIC.", "", "** LMV NATIVE RENDERING **", "Use LGC.drawLMV(lmvStr, x, y,", "width, ignoreBlack) to render", "video/picture strings in-game.", "", "** NEW LGC CAPABILITIES **", "LGC.setPixel(x, y)", "LGC.fillTriangle(x1,y1,x2,y2,x3,y3)", "LGC.strokeTriangle(...)", "LGC.outlineText(txt, x, y, color)", "LGC.invertRect(x, y, w, h)", "LGC.screenShake(intensity)", "LGC.drawSprite(x, y, hexData,", "w, h, ignoreBlack, scale) - Raw", "1D hex string drawing for tiles!", "", "** 2D/3D POLYGON GRAPHICS **", "LGC.fillPolygon([x1,y1,x2,y2...])", "LGC.strokePolygon([x1,y1...])", "LGC.ditherPolygon(pts, pattern)", "LGC.drawRetroVector(x,y,scl,rot,pts)", "LGC.project3D(x,y,z,fov,camZ) -", "Returns {x, y, scale} mapped to", "the 128x96 screen!" ];
+const LMF_INDEX = { scrollY: 0, scrollX: 0, wrap: true, lines: [] };
+
+function updateLMFIndexLines() {
+    LMF_INDEX.lines = []; LGC.setFont(`bold 10px monospace`);
+    if (LMF_INDEX.wrap) {
+        for (let text of INDEX_TEXT) {
+            if (text === "") { LMF_INDEX.lines.push(""); continue; }
+            let words = text.split(' '); let currentLine = '';
+            for (let w of words) { let testLine = currentLine + w + ' '; if (LGC.measureText(testLine).width > LGC.width - 4 && currentLine !== '') { LMF_INDEX.lines.push(currentLine); currentLine = w + ' '; } else { currentLine = testLine; } }
+            LMF_INDEX.lines.push(currentLine);
+        }
+    } else { LMF_INDEX.lines = [...INDEX_TEXT]; }
+}
+
+function launchLMFIndex() { TRUE_KERNEL_8CHIPI.sysCall_Exec('LMF_INDEX', null, () => { SYSTEM.state = 'LMF_INDEX'; uiLayer.style.display = 'none'; LMF_INDEX.scrollY = 0; LMF_INDEX.scrollX = 0; LMF_INDEX.wrap = true; updateLMFIndexLines(); }); }
+function renderLMFIndex() {
+    LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); LGC.setColor(SYSTEM.colorMode ? "#000" : "#111"); LGC.setFont(`bold 10px monospace`);
+    let lineHeight = 14; let startY = 30; LGC.text(`--- LMT MANUAL --- [C:Wrap ${LMF_INDEX.wrap?'ON':'OFF'}]`, 2, 12); LGC.rect(0, 16, LGC.width, 1);
+    let limit = Math.floor((LGC.height - 30) / lineHeight);
+    for(let i = LMF_INDEX.scrollY; i < Math.min(LMF_INDEX.lines.length, LMF_INDEX.scrollY + limit); i++) { LGC.text(LMF_INDEX.lines[i], 2 - LMF_INDEX.scrollX, startY); startY += lineHeight; }
+}
+
+function encodeLMT(str) {
+    let out = [];
+    for (let i = 0; i < str.length; i++) {
+        let c = str.charAt(i);
+        if (/[a-z]/.test(c)) out.push(c.charCodeAt(0) - 96); else if (/[A-Z]/.test(c)) out.push(c.charCodeAt(0) - 64 + 26); else if (/[0-9]/.test(c)) out.push('n' + c);
+        else if (c === ' ') out.push('SPC'); else if (c === '\n') out.push('NLN'); else if (c === '-') out.push('DSH'); else out.push('x' + c.charCodeAt(0).toString(16).toUpperCase());
+    } return out.join('-');
+}
+
+function decodeLMT(str) {
+    let parts = str.split('-'); let res = "";
+    for (let i = 0; i < parts.length; i++) {
+        let p = parts[i]; if (!p) continue;
+        if (p === 'SPC') res += ' '; else if (p === 'NLN') res += '\n'; else if (p === 'DSH') res += '-'; else if (p.startsWith('n')) res += p.substring(1); else if (p.startsWith('x')) res += String.fromCharCode(parseInt(p.substring(1), 16));
+        else if (/^\d+$/.test(p)) { let val = parseInt(p); if (val >= 1 && val <= 26) res += String.fromCharCode(val + 96); else if (val >= 27 && val <= 52) res += String.fromCharCode(val - 26 + 64); } else res += p;
+    } return res;
+}
+
+const CUSTOM_APP = { elements: [], vars: {} };
+function parseLMFCode(code) {
+    CUSTOM_APP.elements = []; CUSTOM_APP.vars = {}; let lines = code.split('\n'); let currentSection = '';
+    for(let line of lines) {
+        line = line.trim(); if(!line) continue; let lower = line.toLowerCase();
+        if (lower.startsWith('allow ')) { let parts = line.substring(6).split('='); if (parts.length === 2) CUSTOM_APP.vars[parts[0].trim()] = parts[1].trim(); continue; }
+        if(lower === 'main menu') { currentSection = 'main menu'; continue; } if(lower.includes('sword data') || lower.includes('(section)')) { currentSection = 'sword'; continue; }
+        if(currentSection === 'main menu' && lower.startsWith('title(')) {
+            let contentStr = line.substring(line.indexOf('(')+1, line.lastIndexOf(')')); let args = contentStr.split(','); if (args.length === 0) continue;
+            let el = { type: 'text', text: args[0].trim(), x: 10, y: 20, color: '#111', font: '10px monospace' };
+            for(let i=1; i<args.length; i++) { let arg = args[i].trim(); let larg = arg.toLowerCase(); if(larg.startsWith('x')) el.x = parseInt(larg.replace('x','')); else if(larg.startsWith('y')) el.y = parseInt(larg.replace('y','')); else if(larg.includes('px')) el.font = `bold ${arg} monospace`; else el.color = arg; }
+            CUSTOM_APP.elements.push(el); continue;
+        }
+    }
+}
+
+function renderCustomApp() { LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); for(let el of CUSTOM_APP.elements) { if(el.type === 'text') { LGC.setColor(el.color || "#111"); if (el.font) LGC.setFont(el.font); LGC.text(el.text, el.x, el.y); } } }
+
+function triggerLMTBoot(app) {
+    TRUE_KERNEL_8CHIPI.sysCall_Exec('APP_BOOT', app.payload, () => {
+        uiLayer.style.display = 'none'; LGC.updateDims();
+        let lmtStr = app.payload.startsWith("LMT::") ? app.payload.replace("LMT::", "") : encodeLMT(app.payload);
+        SYSTEM.bootApp = app; SYSTEM.bootLMT = lmtStr.split('-'); SYSTEM.bootLineIdx = 0; SYSTEM.state = 'BOOT_LMT';
+    });
+}
+
+function finalizeAppLaunch(app) {
+    if (!TRUE_KERNEL_8CHIPI.verifyPayload(app.payload)) { SYSTEM.panic("UNAUTHORIZED KERNEL CALL"); return; }
+    let payload = app.payload; if (payload.startsWith("LMT::")) payload = decodeLMT(payload.replace("LMT::", ""));
+    if (payload.includes("[LMV_PAYLOAD]") || payload.includes("[LMP_PAYLOAD]")) { let type = payload.includes("[LMV_PAYLOAD]") ? "LMV" : "LMP"; executeMediaPlayback(payload, type); return; }
+
+    if (payload.includes("Board_identifier")) {
+        window.LMF_BOARDS = {}; window.LMF_RAW_BOARDS = {}; let lines = payload.split('\n'); let currentBoard = null; let boardsLoaded = 0; let rawBoards = {};
+        for (let i = 0; i < lines.length; i++) {
+            let pureLine = lines[i].replace(/\r/g, '').replace(/\xA0/g, ' '); let tLine = pureLine.trim(); if (!tLine) continue;
+            let bMatch = tLine.match(/^Board\((\d+)\)/i);
+            if (bMatch) { currentBoard = bMatch[1]; rawBoards[currentBoard] = ""; } 
+            else if (currentBoard && boardsLoaded < 3) { if (tLine.toLowerCase() === 'board_identifier' || tLine.includes("run(") || tLine.includes("========") || tLine.includes("[ENGINE")) continue; rawBoards[currentBoard] += pureLine + "\n"; }
+        }
+
+        for (let bId in rawBoards) {
+            let rawStr = rawBoards[bId]; if (!rawStr) continue; TRUE_KERNEL_CH81.init();
+            const parserASM = [ 0x03,0x00,0x10,0x00, 0x03,0x01,0x20,0x00, 0x04,0x04,0x00, 0x30,0x04,0x00, 0x21,0x02,0x2A, 0x30,0x04,0x57, 0x21,0x02,0x1D, 0x05,0x01,0x04, 0x20,0x02,0x23, 0x01,0x04,0x5A, 0x05,0x01,0x04, 0x06,0x00, 0x06,0x01, 0x20,0x02,0x08, 0xFF ];
+            for(let i=0; i<parserASM.length; i++) TRUE_KERNEL_CH81.memory[0x0200 + i] = parserASM[i];
+            for(let i=0; i<rawStr.length; i++) TRUE_KERNEL_CH81.memory[0x1000 + i] = rawStr.charCodeAt(i); TRUE_KERNEL_CH81.memory[0x1000 + rawStr.length] = 0;
+            TRUE_KERNEL_CH81.state = 'RUNNING'; let safety = 0; while(TRUE_KERNEL_CH81.state !== 'HALT' && safety < 100000) { TRUE_KERNEL_CH81.cycle(); safety++; }
+            let parsedStr = ""; let ptr = 0x2000; while (TRUE_KERNEL_CH81.memory[ptr] !== 0) { parsedStr += String.fromCharCode(TRUE_KERNEL_CH81.memory[ptr]); ptr++; }
+            let boardData = []; let pLines = parsedStr.split('\n'); for(let pl of pLines) { if (pl !== "") boardData.push(pl.split('')); }
+            window.LMF_BOARDS[bId] = boardData; window.LMF_RAW_BOARDS[bId] = parsedStr; boardsLoaded++;
+        }
+        if (boardsLoaded === 0) { SYSTEM.panic("BOARD DECODER FAILED: 0 VALID BOARDS"); return; }
+    }
+
+    let runMatch = payload.match(/run\(\s*([a-zA-Z0-9_]+)\s*\)/);
+    if (runMatch) {
+        let exeCommand = runMatch[1].replace(/[^a-zA-Z0-9_]/g, ''); let targetFunc = null;
+        if (TRUE_KERNEL_8CHIPI.appRegistry && TRUE_KERNEL_8CHIPI.appRegistry[exeCommand]) targetFunc = TRUE_KERNEL_8CHIPI.appRegistry[exeCommand];
+        if (!targetFunc || typeof window[targetFunc] !== 'function') { let searchKey = exeCommand.replace("ROM_", "").toLowerCase(); for (let key in window) { if (typeof window[key] === 'function' && key.toLowerCase().includes("launch") && key.toLowerCase().includes(searchKey)) { targetFunc = key; break; } } }
+        if (targetFunc && typeof window[targetFunc] === 'function') { let gamePayload = payload.replace(/Board_identifier/gi, ''); window[targetFunc](gamePayload); } 
+        else { SYSTEM.panic("REGISTRY ERROR: FUNC NOT FOUND"); }
+    } else { parseLMFCode(payload); SYSTEM.state = 'CUSTOM_APP'; }
+}
+
+const modalOverlay = document.getElementById('modal-overlay'); const modalTitle = document.getElementById('modal-title'); const modalInput = document.getElementById('modal-input'); const modalBtn1 = document.getElementById('modal-action-btn-1'); const modalBtn2 = document.getElementById('modal-action-btn-2'); const modalStatus = document.getElementById('modal-status');
+function closeModal() { modalOverlay.style.display = 'none'; }
+function openEncoder() {
+    TRUE_KERNEL_8CHIPI.sysCall_Exec('ENCODER', null, () => {
+        modalOverlay.style.display = 'flex'; modalTitle.innerText = "LMT/LMF ENCODER"; modalInput.value = ""; modalInput.placeholder = "Type your LMF Script here... (Include SYS_CALL:0x... signature)";
+        modalBtn1.innerText = "ENCODE TO LMT"; modalBtn1.style.display = 'block'; modalBtn2.innerText = "DECODE LMT TO LMF"; modalBtn2.style.display = 'block'; modalStatus.innerHTML = "KERNEL COMPILE AUTH: OK.";
+        modalBtn1.onclick = () => { let content = modalInput.value; if(!content) return; content = content.replace(/<[^>]*>?/gm, ''); try { modalInput.value = "LMT::" + encodeLMT(content); modalStatus.innerHTML = "ENCODED SECURELY TO LMT."; } catch(e) { modalStatus.innerHTML = "COMPILATION ERROR."; } };
+        modalBtn2.onclick = () => { let content = modalInput.value; if(!content || !content.startsWith("LMT::")) { modalStatus.innerHTML = "MUST START WITH LMT::"; return; } try { modalInput.value = decodeLMT(content.replace("LMT::", "")); modalStatus.innerHTML = "DECODED TO LMF SCRIPT."; } catch(e) { modalStatus.innerHTML = "DECODE ERROR."; } };
+    });
+}
+
+document.getElementById('file-loader').addEventListener('change', function(e) {
+    const file = e.target.files[0]; if (!file) return; const ext = file.name.split('.').pop().toLowerCase();
+    if (ext === 'bas') {
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            try {
+                let hexStr = window.compileBASICtoCH81(evt.target.result); if (!hexStr || hexStr.length === 0) throw new Error("NO VALID BYTECODE");
+                let appName = file.name.replace(/\.[^/.]+$/, "").toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 15);
+                let virtualLMF = `${appName} (title)(BASIC)\nSYS_CALL:0x11C3\ndescription(Compiled BASIC application. Ext: .bas)\nrun(ROM_${appName})\n[CH81_PAYLOAD]\n${hexStr}\n[/CH81_PAYLOAD]\n========`;
+                if (SYSTEM.state === 'INSTALLER') { INSTALLER_APP.buffer = virtualLMF; INSTALLER_APP.log = `COMPILED .BAS SCRIPT TO CH81 VRAM.`; } else { modalInput.value = virtualLMF; modalStatus.innerHTML = `BASIC SOURCE COMPILED TO MACHINE CODE.`; }
+            } catch(err) { if (SYSTEM.state === 'INSTALLER') INSTALLER_APP.log = `COMPILER ERR: ${err.message.substring(0,25)}`; else { modalStatus.innerHTML = `COMPILER ERR: ${err.message}`; } }
+        }; reader.readAsText(file);
+    } else if (ext === 'ch8' || ext === 'ch81') {
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            const bytes = new Uint8Array(evt.target.result); let hexStr = ""; for(let i=0; i<bytes.length; i++) { hexStr += bytes[i].toString(16).padStart(2, '0').toUpperCase(); }
+            let appName = file.name.replace(/\.[^/.]+$/, "").toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 15);
+            let virtualLMF = `${appName} (title)(ASM)\nSYS_CALL:0x11C3\ndescription(Native 8-bit assembly application. Ext: .${ext})\nrun(ROM_${appName})\n[CH81_PAYLOAD]\n${hexStr}\n[/CH81_PAYLOAD]\n========`;
+            if (SYSTEM.state === 'INSTALLER') { INSTALLER_APP.buffer = virtualLMF; INSTALLER_APP.log = `LOADED BINARY .${ext.toUpperCase()} TO VRAM.`; } else { modalInput.value = virtualLMF; modalStatus.innerHTML = `BINARY .${ext.toUpperCase()} CONVERTED.`; }
+        }; reader.readAsArrayBuffer(file);
+    } else if (ext === 'lmv' || ext === 'lmp') {
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            let rawData = evt.target.result; let appName = file.name.replace(/\.[^/.]+$/, "").toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 15); let typeTag = ext === 'lmv' ? 'LMV' : 'LMP';
+            let virtualLMF = `${appName} (title)(MEDIA)\nSYS_CALL:0x88A1\ndescription(Line Media Payload)\nrun(ROM_${typeTag})\n[${typeTag}_PAYLOAD]\n${rawData}\n[/${typeTag}_PAYLOAD]\n========`;
+            if (SYSTEM.state === 'INSTALLER') { INSTALLER_APP.buffer = virtualLMF; INSTALLER_APP.log = `LOADED .${ext.toUpperCase()} MEDIA.`; } else { modalInput.value = virtualLMF; modalStatus.innerHTML = `MEDIA LOADED.`; }
+        }; reader.readAsText(file);
+    } else {
+        const reader = new FileReader();
+        reader.onload = function(evt) { 
+            let content = window.applyLineLanguage(evt.target.result);
+            if (SYSTEM.state === 'INSTALLER') { 
+                INSTALLER_APP.buffer = content; 
+                INSTALLER_APP.log = "FILE LOADED TO VRAM."; 
+            } else { 
+                modalInput.value = content; 
+                modalStatus.innerHTML = "FILE LOADED."; 
+            } 
+        };
+        reader.readAsText(file);
+    } e.target.value = ''; 
+});
+
+document.getElementById('media-loader').addEventListener('change', function(e) {
+    const file = e.target.files[0]; if (!file) return; MEDIA_MAKER_STATE.appName = file.name.replace(/\.[^/.]+$/, "").toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 15); const url = URL.createObjectURL(file);
+    if (file.type.startsWith('image/')) {
+        MEDIA_MAKER_STATE.isVideo = false; imageElement.src = url;
+        imageElement.onload = () => {
+            offCtx.drawImage(imageElement, 0, 0, 128, 96); let imgData = offCtx.getImageData(0, 0, 128, 96).data; let lastColor = null; let count = 0; let frameStr = ""; let ptr = 0;
+            for(let i=0; i<imgData.length; i+=4) {
+                let r = imgData[i]; let g = imgData[i+1]; let b = imgData[i+2]; let minDist = Infinity; let cIdx = 0;
+                for(let j=0; j<16; j++) { let p = LMV_PALETTE[j]; let dist = Math.pow(r-p[0],2) + Math.pow(g-p[1],2) + Math.pow(b-p[2],2); if(dist < minDist) { minDist = dist; cIdx = j; } }
+                let cHex = cIdx.toString(16).toUpperCase(); ptr++;
+                if(cHex === lastColor) count++; else { if(lastColor !== null) frameStr += lastColor + count.toString(16) + ","; lastColor = cHex; count = 1; }
+            }
+            if(count > 0) frameStr += lastColor + count.toString(16) + ","; MEDIA_MAKER_STATE.resultPayload = frameStr; SYSTEM.state = 'MEDIA_DONE';
+        };
+    } else { MEDIA_MAKER_STATE.isVideo = true; videoElement.src = url; SYSTEM.state = 'MEDIA_PROCESSING'; }
+    e.target.value = '';
+});
+
+const TERM = { state: 'idle', subState: 'idle', history: ["Z80 TERMINAL OS v2.0", "Type HELP for commands."], line: "" };
+function launchTerminal() { TRUE_KERNEL_8CHIPI.sysCall_Exec('TERMINAL', null, () => { SYSTEM.state = 'TERMINAL'; uiLayer.style.display = 'none'; TERM.line = ""; TERM.history = ["Z80 TERMINAL OS v2.0", "Type HELP for commands."]; TERM.subState = 'idle'; }); }
+function renderTerminal() {
+    LGC.setColor("#111"); LGC.clear(); LGC.setColor("#b4b4b4"); LGC.setFont(`bold 10px monospace`);
+    const lineHeight = 12; const maxLines = Math.floor(LGC.height / lineHeight) - 1; let startY = 14;
+    TERM.history.slice(-maxLines).forEach(line => { LGC.text(line, 5, startY); startY += lineHeight; });
+    LGC.text(`${TERM.subState === 'storage' ? "LS>" : "$"} ${TERM.line}${Math.floor(Date.now() / 500) % 2 === 0 ? "█" : " "}`, 5, startY);
+}
+
+document.getElementById('ls-loader').addEventListener('change', function(e) {
+    const file = e.target.files[0]; if (!file) return; const reader = new FileReader();
+    reader.onload = function(evt) { if (LINE_STORAGE.importStr(evt.target.result)) { TERM.history.push("LS: IMPORT SUCCESSFUL."); } else { TERM.history.push("LS: IMPORT FAILED. INVALID SIG."); } };
+    reader.readAsText(file); e.target.value = '';
+});
+
+const inputs = { up:0, down:0, left:0, right:0, w:0, a_key:0, s:0, d:0, space:0, a:0, b:0, c:0, y:0, back:0 }; 
+const kbInputs = { up:0, down:0, left:0, right:0, w:0, a_key:0, s:0, d:0, space:0, a:0, b:0, c:0, y:0, back:0 }; 
+const prevInputs = { ...inputs }; 
+const hexKeymap = { '1':0x1, '2':0x2, '3':0x3, '4':0xC, 'q':0x4, 'w':0x5, 'e':0x6, 'r':0xD, 'a':0x7, 's':0x8, 'd':0x9, 'f':0xE, 'z':0xA, 'x':0x0, 'c':0xB, 'v':0xF };
+
+window.addEventListener("gamepadconnected", (e) => { SYSTEM.gamepadConnected = true; SYSTEM.notification = `[SYS: GP CONNECTED]`; SYSTEM.notifTimer = 180; });
+window.addEventListener("gamepaddisconnected", (e) => { SYSTEM.gamepadConnected = false; SYSTEM.notification = `[SYS: GP DISCONNECT]`; SYSTEM.notifTimer = 180; });
+
+function pollInputs() {
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : []; const gp = gamepads[0];
+    if (gp) {
+        let dPadUp = gp.buttons[12]?.pressed ? 1 : 0; let dPadDown = gp.buttons[13]?.pressed ? 1 : 0;
+        let dPadLeft = gp.buttons[14]?.pressed ? 1 : 0; let dPadRight = gp.buttons[15]?.pressed ? 1 : 0;
+        
+        let lStickUp = gp.axes[1] < -0.5 ? 1 : 0; let lStickDown = gp.axes[1] > 0.5 ? 1 : 0;
+        let lStickLeft = gp.axes[0] < -0.5 ? 1 : 0; let lStickRight = gp.axes[0] > 0.5 ? 1 : 0;
+        
+        let rStickUp = gp.axes[3] < -0.5 ? 1 : 0; let rStickDown = gp.axes[3] > 0.5 ? 1 : 0;
+        let rStickLeft = gp.axes[2] < -0.5 ? 1 : 0; let rStickRight = gp.axes[2] > 0.5 ? 1 : 0;
+
+        inputs.up = kbInputs.up || dPadUp || lStickUp || rStickUp; 
+        inputs.down = kbInputs.down || dPadDown || lStickDown || rStickDown;
+        inputs.left = kbInputs.left || dPadLeft || lStickLeft || rStickLeft; 
+        inputs.right = kbInputs.right || dPadRight || lStickRight || rStickRight;
+        
+        inputs.w = kbInputs.w || dPadUp || lStickUp || rStickUp;
+        inputs.s = kbInputs.s || dPadDown || lStickDown || rStickDown;
+        inputs.a_key = kbInputs.a_key || dPadLeft || lStickLeft || rStickLeft;
+        inputs.d = kbInputs.d || dPadRight || lStickRight || rStickRight;
+        
+        inputs.space = kbInputs.space || (gp.buttons[5]?.pressed || gp.buttons[7]?.pressed ? 1 : 0); 
+
+        inputs.a = kbInputs.a || (gp.buttons[0]?.pressed ? 1 : 0); 
+        inputs.b = kbInputs.b || (gp.buttons[1]?.pressed ? 1 : 0);
+        inputs.c = kbInputs.c || (gp.buttons[2]?.pressed || gp.buttons[4]?.pressed ? 1 : 0); 
+        inputs.y = kbInputs.y || (gp.buttons[3]?.pressed ? 1 : 0);
+        inputs.back = kbInputs.back || (gp.buttons[8]?.pressed || gp.buttons[9]?.pressed ? 1 : 0);
+    } else { Object.keys(kbInputs).forEach(k => inputs[k] = kbInputs[k]); }
+}
+
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { kbInputs.back = 1; e.preventDefault(); return; }
+    if (SYSTEM.state === 'TERMINAL') {
+        if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Enter' || e.code === 'Space') e.preventDefault();
+        if (e.key === 'Backspace') TERM.line = TERM.line.slice(0, -1);
+        else if (e.code === 'Space') TERM.line += ' ';
+        else if (e.key === 'Enter') {
+            TERM.history.push(`${TERM.subState === 'storage' ? "LS>" : "$"} ${TERM.line}`); let cmd = TERM.line.trim().toLowerCase();
+            if (TERM.subState === 'idle') {
+                if (cmd === 'help') TERM.history.push("CMDS: HELP, CLEAR, EXIT, LOCK, UNLOCK, REBOOT, CH81 STORAGE"); else if (cmd === 'lock') { TRUE_KERNEL_8CHIPI.sysFlags.locked = true; TERM.history.push("SYS: KERNEL LOCKED. ALL APPS BLOCKED."); } else if (cmd === 'unlock') { TRUE_KERNEL_8CHIPI.sysFlags.locked = false; TERM.history.push("SYS: KERNEL UNLOCKED."); } else if (cmd === 'reboot') { window.location.reload(); } else if (cmd === 'exit') { TRUE_KERNEL_8CHIPI.sysCall_Yield(); } else if (cmd === 'clear') TERM.history = []; else if (cmd === 'ch81 storage') { TERM.history.push("LINE STORAGE (LS) ACCESS..."); TERM.history.push("ACTION: VIEW, DELETE, IMPORT, EXPORT?"); TERM.subState = 'storage'; } else if (cmd !== "") TERM.history.push("ERR: BAD COMMAND");
+            } else if (TERM.subState === 'storage') {
+                if (cmd === 'view') { let data = LINE_STORAGE.loadAll(); if (!data) TERM.history.push("LS: NO DATA FOUND."); else { let keys = Object.keys(data); TERM.history.push(`LS: ${keys.length} BLOCK(S) FOUND.`); keys.forEach(k => TERM.history.push(`- ${k}`)); } TERM.subState = 'idle'; } else if (cmd === 'delete') { LINE_STORAGE.delete(); TERM.history.push("LS: FORMATTED SUCESSFULLY."); TERM.subState = 'idle'; } else if (cmd === 'export') { let lsStr = LINE_STORAGE.exportStr(); if (!lsStr) TERM.history.push("LS: NO DATA TO EXPORT."); else { triggerDownload('line_memory.ls', lsStr); TERM.history.push("LS: EXPORT INITIATED."); } TERM.subState = 'idle'; } else if (cmd === 'import') { TERM.history.push("LS: WAITING FOR FILE..."); document.getElementById('ls-loader').click(); TERM.subState = 'idle'; } else { TERM.history.push("LS: ABORTED."); TERM.subState = 'idle'; }
+            } TERM.line = "";
+        } else if (e.key.length === 1) TERM.line += e.key; return;
+    }
+    if (SYSTEM.state === 'CALC') {
+        if (e.key === 'x') kbInputs.b = 1; else if (e.key === 'Backspace') CALC.line = CALC.line.slice(0, -1);
+        else if (e.key === 'Enter') { CALC.history.push(`> ${CALC.line}`); try { if (CALC.line.trim() !== "") { if (/[^0-9+\-*/().\s%sincoxtanrdeg]/.test(CALC.line)) throw "ERR"; CALC.history.push(`= ${eval(CALC.line.replace('sin','Math.sin').replace('cos','Math.cos').replace('tan','Math.tan'))}`); } } catch (err) { CALC.history.push("ERR:SYNTAX"); } CALC.line = ""; } 
+        else if (e.code === 'Space') CALC.line += ' ';
+        else if (e.key.length === 1 && e.key !== 'x') CALC.line += e.key; return;
+    }
+    
+    if(e.code==='Space') { kbInputs.space = 1; e.preventDefault(); }
+    if(e.key==='ArrowUp') kbInputs.up = 1; if(e.key==='ArrowDown') kbInputs.down = 1; if(e.key==='ArrowLeft') kbInputs.left = 1; if(e.key==='ArrowRight') kbInputs.right = 1;
+    if(e.key==='w' || e.key==='W') kbInputs.w = 1; if(e.key==='s' || e.key==='S') kbInputs.s = 1; if(e.key==='a' || e.key==='A') kbInputs.a_key = 1; if(e.key==='d' || e.key==='D') kbInputs.d = 1;
+    if(e.key==='z' || e.key==='Enter') kbInputs.a = 1; if(e.key==='x') kbInputs.b = 1; if(e.key==='y' || e.key==='Y') kbInputs.y = 1; if(e.key==='c' || e.key==='Shift') kbInputs.c = 1;
+    
+    let lowerKey = e.key.toLowerCase(); if (SYSTEM.state === 'APP' && hexKeymap[lowerKey] !== undefined) { TRUE_KERNEL_8CHIPI.keys[hexKeymap[lowerKey]] = 1; if (TRUE_KERNEL_CH81.state === 'RUNNING') TRUE_KERNEL_CH81.keys[hexKeymap[lowerKey]] = 1; }
+});
+
+window.addEventListener('keyup', (e) => {
+    if (e.key === 'Escape') kbInputs.back = 0;
+    if(e.code==='Space') kbInputs.space = 0;
+    if(e.key==='ArrowUp') kbInputs.up = 0; if(e.key==='ArrowDown') kbInputs.down = 0; if(e.key==='ArrowLeft') kbInputs.left = 0; if(e.key==='ArrowRight') kbInputs.right = 0;
+    if(e.key==='w' || e.key==='W') kbInputs.w = 0; if(e.key==='s' || e.key==='S') kbInputs.s = 0; if(e.key==='a' || e.key==='A') kbInputs.a_key = 0; if(e.key==='d' || e.key==='D') kbInputs.d = 0;
+    if(e.key==='z' || e.key==='Enter') kbInputs.a = 0; if(e.key==='x') kbInputs.b = 0; if(e.key==='y' || e.key==='Y') kbInputs.y = 0; if(e.key==='c' || e.key==='Shift') kbInputs.c = 0;
+    
+    let lowerKey = e.key.toLowerCase(); if (SYSTEM.state === 'APP' && hexKeymap[lowerKey] !== undefined) { TRUE_KERNEL_8CHIPI.keys[hexKeymap[lowerKey]] = 0; if (TRUE_KERNEL_CH81.state === 'RUNNING') TRUE_KERNEL_CH81.keys[hexKeymap[lowerKey]] = 0; }
+});
+
+// Setup Mobile Touch Controls (Tappable, not clickable)
+document.querySelectorAll('.t-btn').forEach(el => {
+    let handlePress = (e) => {
+        if (e.pointerType === 'mouse' || e.type.startsWith('mouse')) return;
+        e.preventDefault();
+        let key = el.getAttribute('data-key');
+        if (kbInputs[key] !== undefined) kbInputs[key] = 1;
+    };
+    
+    let handleRelease = (e) => {
+        if (e.pointerType === 'mouse' || e.type.startsWith('mouse')) return;
+        e.preventDefault();
+        let key = el.getAttribute('data-key');
+        if (kbInputs[key] !== undefined) kbInputs[key] = 0;
+    };
+    
+    el.addEventListener('pointerdown', handlePress, {passive: false});
+    el.addEventListener('pointerup', handleRelease, {passive: false});
+    el.addEventListener('pointercancel', handleRelease, {passive: false});
+    
+    // Fallback for older iOS Safari
+    el.addEventListener('touchstart', handlePress, {passive: false});
+    el.addEventListener('touchend', handleRelease, {passive: false});
+    el.addEventListener('touchcancel', handleRelease, {passive: false});
+});
+
+// Setup App Canvas Mouse Click Navigation
+canvas.addEventListener('mousedown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    
+    const logicalX = x / (canvas.width / 128);
+    const logicalY = y / (canvas.height / 96);
+
+    if (SYSTEM.state === 'INSTALLER') {
+        for(let i=0; i<INSTALLER_APP.options.length; i++) {
+            let optY = 55 + i*8;
+            if (logicalY >= optY - 8 && logicalY <= optY + 4) {
+                INSTALLER_APP.cursor = i;
+                executeInstallerAction();
+                break;
+            }
+        }
+    } else if (SYSTEM.state === 'APP_MANAGER') {
+        let itemY = 25;
+        let displayLimit = 6;
+        let renderCount = 0;
+        let clickedIdx = -1;
+        for(let i = APP_MAN.offset; i < INSTALLED_APPS.length && renderCount < displayLimit; i++) {
+            if (logicalY >= itemY - 8 && logicalY <= itemY + 4) clickedIdx = i;
+            itemY += 10; renderCount++;
+        }
+        if (renderCount < displayLimit && APP_MAN.offset <= INSTALLED_APPS.length) {
+            let idx = INSTALLED_APPS.length;
+            if (idx >= APP_MAN.offset && renderCount < displayLimit) { 
+                if (logicalY >= itemY - 8 && logicalY <= itemY + 4) clickedIdx = idx;
+                itemY += 10; renderCount++; 
+            }
+            idx++;
+            if (idx >= APP_MAN.offset && renderCount < displayLimit) { 
+                if (logicalY >= itemY - 8 && logicalY <= itemY + 4) clickedIdx = idx;
+                itemY += 10; renderCount++; 
+            }
+        }
+        if (clickedIdx !== -1) {
+            APP_MAN.cursor = clickedIdx;
+            executeAppManagerAction();
+        }
+    } else if (SYSTEM.state === 'MEDIA_PROMPT') {
+        for(let i=0; i<MEDIA_PROMPT_STATE.options.length; i++) {
+            let optY = 45 + i*10;
+            if (logicalY >= optY - 8 && logicalY <= optY + 4) {
+                MEDIA_PROMPT_STATE.cursor = i;
+                executeMediaPromptAction();
+                break;
+            }
+        }
+    } else if (SYSTEM.state === 'MEDIA_MAKER') {
+        if (logicalY > 30) document.getElementById('media-loader').click();
+    }
+});
+
+function executeMediaPromptAction() {
+    let opt = MEDIA_PROMPT_STATE.options[MEDIA_PROMPT_STATE.cursor];
+    if (opt === "PLAY / VIEW") { executeMediaPlayback(MEDIA_PROMPT_STATE.payload, MEDIA_PROMPT_STATE.ext); } 
+    else if (opt === "SAVE TO LIBRARY") { 
+        let appData = processRawAppBlock(MEDIA_PROMPT_STATE.payload + "========"); 
+        if (appData) { appData.ext = MEDIA_PROMPT_STATE.ext; INSTALLED_MEDIA.push(appData); refreshLibrary(); SYSTEM.notification = "SAVED TO MEDIA LIB"; SYSTEM.notifTimer = 180; } 
+    } 
+    else if (opt === "DOWNLOAD FILE") { triggerDownload(`${MEDIA_PROMPT_STATE.title.replace(/\s+/g,'_')}.${MEDIA_PROMPT_STATE.ext.toLowerCase()}`, MEDIA_PROMPT_STATE.payload); } 
+    else if (opt === "COPY CODE") { fallbackCopyTextToClipboard(MEDIA_PROMPT_STATE.payload); SYSTEM.notification = "COPIED TO CLIPBOARD"; SYSTEM.notifTimer = 180; }
+}
+
+let accumulator = 0; let lastTime = 0;
+
+function mainLoop(timestamp) {
+    if (!lastTime) lastTime = timestamp; const deltaTime = timestamp - lastTime; lastTime = timestamp; pollInputs(); LGC.drawCalls = 0;
+    
+    // NATIVE CPU HARDWARE CLOCK: Tick the LINE128 Z80 chip continuously to process the OS commands underneath
+    for(let i=0; i<50; i++) LINE128_CHIP.step();
+
+    if (inputs.back && !prevInputs.back && SYSTEM.state !== 'OS' && SYSTEM.state !== 'MEDIA_PROMPT') { TRUE_KERNEL_8CHIPI.sysCall_Yield(); }
+
+    if (SYSTEM.state === 'BOOT_LMT') {
+        LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); LGC.setColor(SYSTEM.colorMode ? "#000" : "#111"); LGC.setFont("10px monospace"); LGC.text(`KERNEL LOADING APP TO RAM...`, 2, 20);
+        let chunkSize = Math.max(1, Math.floor(SYSTEM.bootLMT.length / 30)); SYSTEM.bootLineIdx += chunkSize;
+        let displayStr = SYSTEM.bootLMT.slice(Math.max(0, SYSTEM.bootLineIdx - 15), SYSTEM.bootLineIdx).join(' '); LGC.text(displayStr.substring(0, 30), 2, 50); LGC.rect(10, 80, (SYSTEM.bootLineIdx / SYSTEM.bootLMT.length) * (LGC.width - 20), 4);
+        if (SYSTEM.bootLineIdx >= SYSTEM.bootLMT.length) finalizeAppLaunch(SYSTEM.bootApp);
+    }
+    else if (SYSTEM.state === 'ACCESS_DENIED') {
+        LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); LGC.setColor(SYSTEM.colorMode ? "#000" : "#111"); LGC.setFont("bold 12px monospace"); LGC.text("PROGRAM DENIED", 15, 35); LGC.setFont("10px monospace");
+        let msg = SYSTEM.panicMsg || "UNAUTHORIZED KERNEL CALL";
+        if (LGC.measureText(msg).width > LGC.width - 10) { let words = msg.split(' '); let line = ''; let y = 55; for(let w of words) { if(LGC.measureText(line + w + ' ').width > LGC.width - 10) { LGC.text(line, 2, y); y+=10; line = w + ' '; } else { line += w + ' '; } } LGC.text(line, 2, y); } else { LGC.text(msg, 2, 55); }
+        if (Math.floor(Date.now() / 500) % 2 === 0) LGC.text("PRESS ESC TO EXIT", 20, 80);
+    }
+    else if (SYSTEM.state === 'APP_INFO') {
+        LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); LGC.setColor(SYSTEM.colorMode ? "#000" : "#111"); LGC.setFont("bold 12px monospace"); LGC.text(`[ ${APP_INFO_DISPLAY.label.toUpperCase()} ]`, 2, 14); LGC.setFont("bold 10px monospace"); LGC.text(`TITLE: ${APP_INFO_DISPLAY.title}`, 2, 30);
+        if (!APP_INFO_DISPLAY.lines) {
+            APP_INFO_DISPLAY.lines = []; let words = APP_INFO_DISPLAY.desc.split(' '); let line = ''; LGC.setFont("10px monospace");
+            for(let w of words) { if(LGC.measureText(line + w + ' ').width > LGC.width - 10) { if (line.trim() === '') { APP_INFO_DISPLAY.lines.push(w); } else { APP_INFO_DISPLAY.lines.push(line); line = w + ' '; } } else { line += w + ' '; } }
+            if (line.trim() !== '') APP_INFO_DISPLAY.lines.push(line); APP_INFO_DISPLAY.scrollY = 0; APP_INFO_DISPLAY.scrollDelay = 0;
+        }
+        LGC.setFont("10px monospace"); let y = 50; let limit = Math.floor((LGC.height - 55) / 12);
+        for (let i = APP_INFO_DISPLAY.scrollY; i < Math.min(APP_INFO_DISPLAY.lines.length, APP_INFO_DISPLAY.scrollY + limit); i++) { LGC.text(APP_INFO_DISPLAY.lines[i], 2, y); y += 12; }
+        if (inputs.up || inputs.w) { if (APP_INFO_DISPLAY.scrollDelay <= 0) { APP_INFO_DISPLAY.scrollY = Math.max(0, APP_INFO_DISPLAY.scrollY - 1); APP_INFO_DISPLAY.scrollDelay = 5; } else APP_INFO_DISPLAY.scrollDelay--; } else if (inputs.down || inputs.s) { if (APP_INFO_DISPLAY.scrollDelay <= 0) { APP_INFO_DISPLAY.scrollY = Math.min(Math.max(0, APP_INFO_DISPLAY.lines.length - limit), APP_INFO_DISPLAY.scrollY + 1); APP_INFO_DISPLAY.scrollDelay = 5; } else APP_INFO_DISPLAY.scrollDelay--; } else { APP_INFO_DISPLAY.scrollDelay = 0; }
+        if (APP_INFO_DISPLAY.scrollY > 0) LGC.text("^", LGC.width - 10, 45); if (APP_INFO_DISPLAY.scrollY < Math.max(0, APP_INFO_DISPLAY.lines.length - limit)) LGC.text("v", LGC.width - 10, LGC.height - 5);
+    } 
+    else if (SYSTEM.state === 'OS') {
+        const items = MENUS[currentMenu];
+        if (inputs.c && !prevInputs.c && (currentMenu === 'GAMES' || currentMenu === 'MEDIA') && items[SYSTEM.menuIdx] && items[SYSTEM.menuIdx].appData) { APP_INFO_DISPLAY = items[SYSTEM.menuIdx].appData; APP_INFO_DISPLAY.lines = null; SYSTEM.state = 'APP_INFO'; uiLayer.style.display = 'none'; } else {
+            if ((inputs.up || inputs.w) && !(prevInputs.up || prevInputs.w)) { SYSTEM.menuIdx = (SYSTEM.menuIdx - 1 + items.length) % items.length; renderMenu(); }
+            if ((inputs.down || inputs.s) && !(prevInputs.down || prevInputs.s)) { SYSTEM.menuIdx = (SYSTEM.menuIdx + 1) % items.length; renderMenu(); }
+            
+            let actionPressed = (inputs.a && !prevInputs.a) || (inputs.b && !prevInputs.b) || (inputs.y && !prevInputs.y) || (inputs.c && !prevInputs.c);
+            if (actionPressed) items[SYSTEM.menuIdx].action();
+            
+            if (inputs.back && !prevInputs.back && currentMenu !== 'MAIN') loadMenu('MAIN');
+        } updateZ80Regs();
+    }
+    
+    if (SYSTEM.state === 'CALC') renderCalculator(); if (SYSTEM.state === 'TERMINAL') renderTerminal(); if (SYSTEM.state === 'INSTALLER') { updateNativeInstaller(); renderNativeInstaller(); } if (SYSTEM.state === 'APP_MANAGER') { updateAppManager(); renderAppManager(); }
+    
+    if (SYSTEM.state === 'MEDIA_PROMPT') {
+        LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); LGC.setColor(SYSTEM.colorMode ? "#000" : "#111"); LGC.setFont("bold 10px monospace"); LGC.text("MEDIA PROCESSOR", 2, 10); LGC.line(0, 12, LGC.width, 12); LGC.setFont("10px monospace"); LGC.text(`FILE: ${MEDIA_PROMPT_STATE.title}.${MEDIA_PROMPT_STATE.ext}`, 5, 25);
+        for (let i = 0; i < MEDIA_PROMPT_STATE.options.length; i++) { LGC.text((i === MEDIA_PROMPT_STATE.cursor ? "> " : "  ") + MEDIA_PROMPT_STATE.options[i], 5, 45 + i*10); }
+        if ((inputs.up || inputs.w) && !(prevInputs.up || prevInputs.w)) MEDIA_PROMPT_STATE.cursor = Math.max(0, MEDIA_PROMPT_STATE.cursor - 1); 
+        if ((inputs.down || inputs.s) && !(prevInputs.down || prevInputs.s)) MEDIA_PROMPT_STATE.cursor = Math.min(MEDIA_PROMPT_STATE.options.length - 1, MEDIA_PROMPT_STATE.cursor + 1);
+        
+        let actionPressed = (inputs.a && !prevInputs.a) || (inputs.b && !prevInputs.b) || (inputs.y && !prevInputs.y) || (inputs.c && !prevInputs.c);
+        if (actionPressed) {
+            executeMediaPromptAction();
+        }
+    }
+
+    if (SYSTEM.state === 'LMF_INDEX') {
+        if (inputs.up || inputs.w) LMF_INDEX.scrollY = Math.max(0, LMF_INDEX.scrollY - 1); 
+        if (inputs.down || inputs.s) LMF_INDEX.scrollY = Math.min(Math.max(0, LMF_INDEX.lines.length - 5), LMF_INDEX.scrollY + 1);
+        if (inputs.left || inputs.a_key) LMF_INDEX.scrollX = Math.max(0, LMF_INDEX.scrollX - 5); 
+        if (inputs.right || inputs.d) LMF_INDEX.scrollX += 5;
+        if (inputs.c && !prevInputs.c) { LMF_INDEX.wrap = !LMF_INDEX.wrap; LMF_INDEX.scrollX = 0; updateLMFIndexLines(); } renderLMFIndex();
+    }
+    
+    if (SYSTEM.state === 'CUSTOM_APP') renderCustomApp();
+
+    if (SYSTEM.state === 'MEDIA_MAKER') {
+        LGC.setColor(SYSTEM.colorMode ? "#FFF" : "#b4b4b4"); LGC.clear(); LGC.setColor(SYSTEM.colorMode ? "#000" : "#111"); LGC.setFont("bold 12px monospace"); LGC.text("MEDIA MAKER", 10, 20); LGC.setFont("10px monospace"); LGC.text("CONVERTS MEDIA TO 8-BIT", 5, 35);
+        if (Math.floor(Date.now() / 500) % 2 === 0) LGC.text("PRESS FACE BTN TO UPLOAD", 15, 60);
+        let actionPressed = (inputs.a && !prevInputs.a) || (inputs.b && !prevInputs.b) || (inputs.y && !prevInputs.y) || (inputs.c && !prevInputs.c);
+        if (actionPressed) { document.getElementById('media-loader').click(); }
+    }
+    else if (SYSTEM.state === 'MEDIA_PROCESSING') {
+        if (!MEDIA_MAKER_STATE.capturing) { videoElement.play(); MEDIA_MAKER_STATE.capturing = true; MEDIA_MAKER_STATE.frames = []; MEDIA_MAKER_STATE.lastTime = timestamp; MEDIA_MAKER_STATE.frameCount = 0; }
+        if (timestamp - MEDIA_MAKER_STATE.lastTime > 100) {
+            MEDIA_MAKER_STATE.lastTime = timestamp;
+            if (videoElement.ended || MEDIA_MAKER_STATE.frameCount > 300) { 
+                videoElement.pause(); MEDIA_MAKER_STATE.capturing = false; MEDIA_MAKER_STATE.resultPayload = MEDIA_MAKER_STATE.frames.join('|');
+                let virtualLMF = `${MEDIA_MAKER_STATE.appName || 'CUSTOM_VIDEO'} (title)(VIDEO)\nSYS_CALL:0x88A1\ndescription(Line Media Video Payload)\nrun(ROM_LMV)\n[LMV_PAYLOAD]\n${MEDIA_MAKER_STATE.resultPayload}\n[/LMV_PAYLOAD]\n========`;
+                launchMediaPrompt(MEDIA_MAKER_STATE.appName || 'CUSTOM_VIDEO', 'lmv', virtualLMF);
+            } else {
+                offCtx.drawImage(videoElement, 0, 0, 128, 96); let imgData = offCtx.getImageData(0, 0, 128, 96).data; let lastColor = null; let count = 0; let frameStr = ""; const pW = LGC.width/128; const pH = LGC.height/96; LGC.clear(); let ptr = 0;
+                for(let i=0; i<imgData.length; i+=4) {
+                    let r = imgData[i]; let g = imgData[i+1]; let b = imgData[i+2]; let minDist = Infinity; let cIdx = 0;
+                    for(let j=0; j<16; j++) { let p = LMV_PALETTE[j]; let dist = Math.pow(r-p[0],2) + Math.pow(g-p[1],2) + Math.pow(b-p[2],2); if(dist < minDist) { minDist = dist; cIdx = j; } }
+                    let cHex = cIdx.toString(16).toUpperCase(); LGC.ctx.fillStyle = LMV_COLORS_HEX[cIdx]; let dx = ptr % 128; let dy = Math.floor(ptr / 128); LGC.rawRect(dx*pW, dy*pH, pW, pH); ptr++;
+                    if(cHex === lastColor) count++; else { if(lastColor !== null) frameStr += lastColor + count.toString(16) + ","; lastColor = cHex; count = 1; }
+                }
+                if(count > 0) frameStr += lastColor + count.toString(16) + ","; MEDIA_MAKER_STATE.frames.push(frameStr); MEDIA_MAKER_STATE.frameCount++;
+            }
+        }
+    }
+    else if (SYSTEM.state === 'MEDIA_DONE') {
+        let typeTag = MEDIA_MAKER_STATE.isVideo ? 'LMV' : 'LMP';
+        let virtualLMF = `${MEDIA_MAKER_STATE.appName || 'CUSTOM_MEDIA'} (title)(MEDIA)\nSYS_CALL:0x88A1\ndescription(Line Media Payload)\nrun(ROM_${typeTag})\n[${typeTag}_PAYLOAD]\n${MEDIA_MAKER_STATE.resultPayload}\n[/${typeTag}_PAYLOAD]\n========`;
+        launchMediaPrompt(MEDIA_MAKER_STATE.appName || 'CUSTOM_MEDIA', typeTag.toLowerCase(), virtualLMF);
+    }
+
+    if (SYSTEM.state === 'APP' && SYSTEM.activeApp) {
+        accumulator += deltaTime; if (accumulator > 200) accumulator = 200;
+        while (accumulator >= 1000/60) { SYSTEM.activeApp.update(); accumulator -= 1000/60; } 
+        try { SYSTEM.activeApp.render(); } catch (e) { if (e !== "LGC_LIMIT_EXCEEDED") console.error(e); }
+        updateZ80Regs(); 
+    }
+
+    if (SYSTEM.notifTimer > 0) { LGC.setColor("rgba(0,0,0,0.8)"); LGC.rect(5, 5, LGC.width - 10, 15); LGC.setColor("#0f0"); LGC.setFont("bold 8px monospace"); LGC.text(SYSTEM.notification, 10, 15); SYSTEM.notifTimer--; }
+
+    Object.keys(inputs).forEach(k => prevInputs[k] = inputs[k]); requestAnimationFrame(mainLoop);
+}
+
+boot();
+
+</script>
+</body>
+</html>
