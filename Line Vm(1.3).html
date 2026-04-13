@@ -294,7 +294,7 @@ let KEY_MAPPINGS = JSON.parse(localStorage.getItem('LINE_OS_KEYMAP')) || {
 	space: [' '], a: ['z','Z','Enter'], b: ['x','X'], y: ['y','Y'], c: ['c','C','Shift'], back: ['Escape']
 };
 
-// --- LINEPAD 8-BIT AUDIO SYSTEM ---
+// --- LINEPAD 8/16-BIT AUDIO SYSTEM ---
 const LINEPAD = {
 	ctx: null,
 	init: function() {
@@ -310,18 +310,97 @@ const LINEPAD = {
 			this.init();
 		}
 	},
-	play: function(type, freq, duration, vol=0.5, endFreq=null) {
+	play: function(type, freq, duration, vol=0.5, endFreq=null, opts={}) {
 		this.unlock();
 		if (!this.ctx || this.ctx.state === 'suspended') return;
 		if (endFreq === null) endFreq = freq;
 
-		const osc = this.ctx.createOscillator();
-		const gain = this.ctx.createGain();
-		osc.connect(gain);
-		gain.connect(this.ctx.destination);
-
 		const t = this.ctx.currentTime;
 		const durS = duration / 1000;
+		const gain = this.ctx.createGain();
+
+		// Check if this is a strict legacy call (no ADSR overrides, using original types 0-3)
+		const isLegacy = (type >= 0 && type <= 3) && !opts.attack && !opts.release && !opts.decay;
+
+		// --- NEW UPGRADED AUDIO ENGINE ---
+		if (!isLegacy) {
+			gain.connect(this.ctx.destination);
+			const a = opts.attack || 0.005;
+			const s = opts.sustain !== undefined ? opts.sustain : 0;
+			const r = opts.release || (durS / 4);
+
+			gain.gain.setValueAtTime(0, t);
+			gain.gain.linearRampToValueAtTime(vol, t + a);
+			if (opts.decay) {
+				gain.gain.setTargetAtTime(Math.max(0.001, s * vol), t + a, opts.decay);
+			}
+			gain.gain.setTargetAtTime(0.001, t + durS - r, r / 3);
+
+			if (type === 3 || type === 6 || type === 9) { // Type 3 is passed here only if ADSR was overridden
+				const bufferSize = this.ctx.sampleRate * durS;
+				const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+				const data = buffer.getChannelData(0);
+				let lastVal = 0;
+				let lfsr = 1;
+				let isMetallic = (type === 6);
+				for (let i = 0; i < bufferSize; i++) {
+					if (i % Math.max(1, Math.floor(freq / 50)) === 0) {
+						let bit = (lfsr & 1) ^ ((lfsr >> (isMetallic ? 6 : 1)) & 1);
+						lfsr = (lfsr >> 1) | (bit << 14);
+						lastVal = (lfsr & 1) ? 1 : -1;
+					}
+					data[i] = lastVal;
+				}
+				const noiseSrc = this.ctx.createBufferSource();
+				noiseSrc.buffer = buffer;
+				noiseSrc.connect(gain);
+				noiseSrc.start(t);
+				noiseSrc.stop(t + durS);
+				return;
+			}
+
+			const osc = this.ctx.createOscillator();
+			let mainNode = osc;
+
+			if (type === 4 || type === 5 || type === 8) {
+				osc.type = 'sawtooth';
+				const ws = this.ctx.createWaveShaper();
+				const curve = new Float32Array(256);
+				let duty = 0.5; // Type 8 is authentic 50%
+				if (type === 4) duty = 0.25;
+				if (type === 5) duty = 0.125;
+				for (let i = 0; i < 256; i++) curve[i] = (i / 256 < duty) ? 1 : -1;
+				ws.curve = curve;
+				osc.connect(ws);
+				mainNode = ws;
+			} else if (type === 7) {
+				osc.type = 'sine';
+				const fmOsc = this.ctx.createOscillator();
+				const fmGain = this.ctx.createGain();
+				fmOsc.type = 'sine';
+				fmOsc.frequency.setValueAtTime(freq * (opts.fmRatio || 2.0), t);
+				fmGain.gain.setValueAtTime(freq * (opts.fmAmount || 1.5), t);
+				fmOsc.connect(fmGain);
+				fmGain.connect(osc.frequency);
+				fmOsc.start(t);
+				fmOsc.stop(t + durS);
+			} else {
+				const types = ['square', 'sawtooth', 'triangle'];
+				osc.type = types[type] || 'square';
+			}
+
+			mainNode.connect(gain);
+			osc.frequency.setValueAtTime(freq, t);
+			if (freq !== endFreq) osc.frequency.exponentialRampToValueAtTime(Math.max(1, endFreq), t + durS);
+			osc.start(t);
+			osc.stop(t + durS);
+			return;
+		}
+
+		// --- STRICT BACKWARD COMPATIBILITY ENGINE ---
+		const osc = this.ctx.createOscillator();
+		osc.connect(gain);
+		gain.connect(this.ctx.destination);
 
 		if (type === 3) {
 			const bufferSize = this.ctx.sampleRate * durS;
@@ -728,9 +807,36 @@ const TRUE_KERNEL_CH81 = {
 			case 0xFF: this.state = 'HALT'; this.pc += 1; break; 
 			default: this.state = 'HALT'; console.warn(`CH81 KERNEL PANIC: 0x${op.toString(16)}`); break;
 		}
+	},
+	loadROM: function(hexStr, use128) {
+		this.init();
+		if (use128 && SYSTEM.chipMode > 0) this.memory = CRT_CHIP.memory; else this.memory = LINE128_MEMORY.memory;
+		this.memory.fill(0);
+		for(let i=0; i<hexStr.length; i+=2) {
+			let addr = 0x0200 + (i/2);
+			if (addr < this.memory.length) this.memory[addr] = parseInt(hexStr.substring(i, i+2), 16);
+		}
+		this.state = 'RUNNING';
+	},
+	loadCH8: function(hexStr) {
+		this.init();
+		this.memory = SYSTEM.chipMode > 0 ? CRT_CHIP.memory : LINE128_MEMORY.memory;
+		this.memory.fill(0);
+		const font = [
+			0xF0,0x90,0x90,0x90,0xF0, 0x20,0x60,0x20,0x20,0x70, 0xF0,0x10,0xF0,0x80,0xF0, 0xF0,0x10,0xF0,0x10,0xF0,
+			0x90,0x90,0xF0,0x10,0x10, 0xF0,0x80,0xF0,0x10,0xF0, 0xF0,0x80,0xF0,0x90,0xF0, 0xF0,0x10,0x20,0x40,0x40,
+			0xF0,0x90,0xF0,0x90,0xF0, 0xF0,0x90,0xF0,0x10,0xF0, 0xF0,0x90,0xF0,0x90,0x90, 0xE0,0x90,0xE0,0x90,0xE0,
+			0xF0,0x80,0x80,0x80,0xF0, 0xE0,0x90,0x90,0x90,0xE0, 0xF0,0x80,0xF0,0x80,0xF0, 0xF0,0x80,0xF0,0x80,0x80
+		];
+		for(let i=0; i<font.length; i++) this.memory[i] = font[i];
+		for(let i=0; i<hexStr.length; i+=2) {
+			let addr = 0x0200 + (i/2);
+			if (addr < this.memory.length) this.memory[addr] = parseInt(hexStr.substring(i, i+2), 16);
+		}
+		this.ch8Mode = true;
+		this.state = 'RUNNING';
 	}
 };
-TRUE_KERNEL_CH81.init();
 
 function launch8Chipi() { SYSTEM.notification = "8CHIPI KERNEL ACTIVE"; SYSTEM.notifTimer = 180; }
 function launchCH81() { SYSTEM.notification = "CH81 KERNEL ACTIVE"; SYSTEM.notifTimer = 180; }
@@ -1473,7 +1579,7 @@ function boot() {
 		if (appData) { appData.ext = "LMP"; appData.isHidden = true; INSTALLED_MEDIA.push(appData); }
 	});
 
-	let soundPadLMF = `SOUNDS PAD (title)(APP)\nSYS_CALL:0x88A1\ndescription(8-Bit Audio Synthesizer Test)\nrun(ROM_SOUNDPAD)\n[ENGINE SOURCE CODE]\nsection grid = [];\nfor (allow i=0; i<32; i++) {\n\tif (i < 28) {\n\t\tallow t = i % 4; \n\t\tallow f1 = 150 + (i * 40);\n\t\tallow f2 = f1;\n\t\tallow d = 100 + (i * 10);\n\t\tallow n = "SND"+i;\n\t\tallow c = "#" + (Math.floor(1111111 + i*500000)).toString(16).substring(0,6);\n\t\t\n\t\tif (i >= 4 && i <= 10) { f2 = f1 * 2; n = "UP "+i; } \n\t\tif (i >= 11 && i <= 17) { f2 = f1 / 4; n = "DWN"+i; } \n\t\tif (i >= 18 && i <= 24) { f2 = f1 * 1.5; d = 50; n = "BLP"+i; } \n\t\tif (t === 3) { f1 = 50 + (i*10); f2 = f1; n = "NOI"+i; } \n\t\t\n\t\tif (i===0) { t=0; f1=440; f2=880; d=150; n="COIN"; c="#FFD700"; }\n\t\tif (i===1) { t=0; f1=300; f2=600; d=200; n="JUMP"; c="#00FF00"; }\n\t\tif (i===2) { t=1; f1=880; f2=110; d=150; n="LAZR"; c="#FF0000"; }\n\t\tif (i===3) { t=3; f1=100; f2=50;  d=300; n="BOOM"; c="#888888"; }\n\t\tif (i===4) { t=3; f1=800; f2=200; d=250; n="CRSH"; c="#A52A2A"; }\n\t\tif (i===5) { t=0; f1=600; f2=900; d=300; n="1UP!"; c="#00FFFF"; }\n\t\tif (i===6) { t=2; f1=200; f2=100; d=400; n="LOSE"; c="#4B0082"; }\n\t\tif (i===7) { t=1; f1=800; f2=1200;d=150; n="WARP"; c="#FF00FF"; }\n\t\t\n\t\tgrid.push({ isBeat:false, t:t, f1:f1, f2:f2, d:d, n:n, c:c });\n\t} else {\n\t\tallow beatIdx = i - 28;\n\t\tallow names = ["BEAT1", "BEAT2", "BEAT3", "STOP "];\n\t\tallow colors = ["#FF00FF", "#00FFFF", "#FFFF00", "#FF0000"];\n\t\tgrid.push({ isBeat:true, idx:beatIdx, n:names[beatIdx], c:colors[beatIdx] });\n\t}\n}\n\nallow beats = [\n\t[ {t:3,f1:100,f2:50,d:100}, null, {t:3,f1:300,f2:200,d:100}, null, {t:3,f1:100,f2:50,d:100}, {t:0,f1:220,f2:220,d:100}, {t:3,f1:300,f2:200,d:100}, null ],\n\t[ {t:1,f1:220,f2:220,d:100}, {t:1,f1:277,f2:277,d:100}, {t:1,f1:330,f2:330,d:100}, {t:1,f1:440,f2:440,d:100}, {t:1,f1:330,f2:330,d:100}, {t:1,f1:277,f2:277,d:100} ],\n\t[ {t:2,f1:110,f2:110,d:150}, null, {t:2,f1:110,f2:110,d:150}, {t:2,f1:146,f2:146,d:150}, {t:2,f1:165,f2:165,d:150}, null, {t:2,f1:146,f2:146,d:100}, null ]\n];\nallow bSpeeds = [10, 8, 12];\n\nallow cursor = 0;\nallow scrollCol = 0;\nallow pBeat = -1;\nallow bTick = 0;\nallow bStep = 0;\n\nwindow.launchROM_SOUNDPAD = collect(payload) {\n\tSYSTEM.state = 'APP';\n\tSYSTEM.activeApp = {\n\t\tupdate: collect() {\n\t\t\tif (inputs.back && !prevInputs.back) { TRUE_KERNEL_8CHIPI.sysCall_Yield(); return; }\n\t\t\tallow r = Math.floor(cursor / 8); allow c = cursor % 8;\n\t\t\tif (inputs.left && !prevInputs.left) c = (c - 1 + 8) % 8;\n\t\t\tif (inputs.right && !prevInputs.right) c = (c + 1) % 8;\n\t\t\tif (inputs.up && !prevInputs.up) r = (r - 1 + 4) % 4;\n\t\t\tif (inputs.down && !prevInputs.down) r = (r + 1) % 4;\n\t\t\tcursor = r * 8 + c;\n\t\t\t\n\t\t\tif (c < scrollCol) scrollCol = c;\n\t\t\tif (c >= scrollCol + 4) scrollCol = c - 3;\n\n\t\t\tif ((inputs.a && !prevInputs.a) || (inputs.space && !prevInputs.space) || (inputs.y && !prevInputs.y) || (inputs.b && !prevInputs.b)) {\n\t\t\t\tallow item = grid[cursor];\n\t\t\t\tif (item.isBeat) {\n\t\t\t\t\tif (item.idx === 3) { pBeat = -1; }\n\t\t\t\t\telse { pBeat = item.idx; bTick = 0; bStep = 0; }\n\t\t\t\t} else {\n\t\t\t\t\tLINEPAD.play(item.t, item.f1, item.d, 0.5, item.f2);\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tif (pBeat >= 0) {\n\t\t\t\tbTick++;\n\t\t\t\tif (bTick >= bSpeeds[pBeat]) {\n\t\t\t\t\tbTick = 0;\n\t\t\t\t\tallow seq = beats[pBeat];\n\t\t\t\t\tallow note = seq[bStep];\n\t\t\t\t\tif (note !== null) {\n\t\t\t\t\t\tLINEPAD.play(note.t, note.f1, note.d, 0.5, note.f2);\n\t\t\t\t\t}\n\t\t\t\t\tbStep = (bStep + 1) % seq.length;\n\t\t\t\t}\n\t\t\t}\n\t\t},\n\t\trender: collect() {\n\t\t\tLGC.setColor("#111"); LGC.clear();\n\t\t\tLGC.setColor("#FFF"); LGC.setFont("bold 10px monospace"); LGC.text("LINEPAD 8-BIT SYNTH", 10, 15);\n\t\t\t\n\t\t\tif (scrollCol > 0) LGC.text("<", 2, 45);\n\t\t\tif (scrollCol < 4) LGC.text(">", 120, 45);\n\n\t\t\tfor (allow i=0; i<32; i++) {\n\t\t\t\tallow row = Math.floor(i/8); allow col = i % 8;\n\t\t\t\tif (col >= scrollCol && col < scrollCol + 4) {\n\t\t\t\t\tallow displayCol = col - scrollCol;\n\t\t\t\t\tallow px = 15 + displayCol * 26; allow py = 20 + row * 18;\n\t\t\t\t\tif (cursor === i) { LGC.setColor("#FFF"); LGC.rect(px-2, py-2, 24, 18); }\n\t\t\t\t\tLGC.setColor(grid[i].c); LGC.rect(px, py, 20, 14);\n\t\t\t\t\tLGC.setColor("#000"); LGC.setFont("bold 6px monospace"); \n\t\t\t\t\tallow label = grid[i].n;\n\t\t\t\t\tif (grid[i].isBeat && pBeat === grid[i].idx && Math.floor(Date.now()/200)%2===0) label = "PLY";\n\t\t\t\t\tLGC.text(label.substring(0,5), px+1, py+10);\n\t\t\t\t}\n\t\t\t}\n\t\t\tLGC.setColor("#FFF"); LGC.setFont("8px monospace");\n\t\t\tallow item = grid[cursor];\n\t\t\tif (!item.isBeat) {\n\t\t\t\tallow typeName = ["SQ","SAW","TRI","NOI"][item.t];\n\t\t\t\tLGC.text("W:"+typeName+" F:"+Math.floor(item.f1)+"->"+Math.floor(item.f2), 10, 95);\n\t\t\t} else {\n\t\t\t\tLGC.text(item.n + " SEQUENCE", 10, 95);\n\t\t\t}\n\t\t}\n\t};\n};\n[/ENGINE SOURCE CODE]\n========`;
+	let soundPadLMF = `SOUNDS PAD (title)(APP)\nSYS_CALL:0x88A1\ndescription(Authentic 8-Bit Hardware Audio Synthesizer)\nrun(ROM_SOUNDPAD)\n[ENGINE SOURCE CODE]\nsection grid = [];\nfor (allow i=0; i<32; i++) {\n\tif (i < 28) {\n\t\tallow t = i % 4; \n\t\tallow f1 = 150 + (i * 40);\n\t\tallow f2 = f1;\n\t\tallow d = 100 + (i * 10);\n\t\tallow n = "SND"+i;\n\t\tallow c = "#" + (Math.floor(1111111 + i*500000)).toString(16).substring(0,6);\n\t\t\n\t\tif (i >= 4 && i <= 10) { f2 = f1 * 2; n = "UP "+i; } \n\t\tif (i >= 11 && i <= 17) { f2 = f1 / 4; n = "DWN"+i; } \n\t\tif (i >= 18 && i <= 24) { f2 = f1 * 1.5; d = 50; n = "BLP"+i; } \n\t\tif (t === 3) { f1 = 50 + (i*10); f2 = f1; n = "NOI"+i; } \n\t\t\n\t\t/* Emulate Authentic Console Specific Tones */\n\t\tif (i===0) { t=4; f1=880; f2=1200; d=150; n="COIN"; c="#FFD700"; }\n\t\tif (i===1) { t=5; f1=300; f2=600; d=200; n="JUMP"; c="#00FF00"; }\n\t\tif (i===2) { t=4; f1=880; f2=110; d=150; n="LAZR"; c="#FF0000"; }\n\t\tif (i===3) { t=9; f1=100; f2=50;  d=300; n="BOOM"; c="#888888"; }\n\t\tif (i===4) { t=6; f1=400; f2=200; d=250; n="CRSH"; c="#A52A2A"; }\n\t\tif (i===5) { t=8; f1=600; f2=900; d=300; n="1UP!"; c="#00FFFF"; }\n\t\tif (i===6) { t=7; f1=200; f2=100; d=400; n="LOSE"; c="#4B0082"; }\n\t\tif (i===7) { t=7; f1=400; f2=1200;d=250; n="WARP"; c="#FF00FF"; }\n\t\t\n\t\tgrid.push({ isBeat:false, t:t, f1:f1, f2:f2, d:d, n:n, c:c });\n\t} else {\n\t\tallow beatIdx = i - 28;\n\t\tallow names = ["BEAT1", "BEAT2", "BEAT3", "STOP "];\n\t\tallow colors = ["#FF00FF", "#00FFFF", "#FFFF00", "#FF0000"];\n\t\tgrid.push({ isBeat:true, idx:beatIdx, n:names[beatIdx], c:colors[beatIdx] });\n\t}\n}\n\nallow beats = [\n\t[ {t:3,f1:100,f2:50,d:100}, null, {t:3,f1:300,f2:200,d:100}, null, {t:3,f1:100,f2:50,d:100}, {t:0,f1:220,f2:220,d:100}, {t:3,f1:300,f2:200,d:100}, null ],\n\t[ {t:1,f1:220,f2:220,d:100}, {t:1,f1:277,f2:277,d:100}, {t:1,f1:330,f2:330,d:100}, {t:1,f1:440,f2:440,d:100}, {t:1,f1:330,f2:330,d:100}, {t:1,f1:277,f2:277,d:100} ],\n\t[ {t:4,f1:110,f2:110,d:150}, null, {t:4,f1:110,f2:110,d:150}, {t:4,f1:146,f2:146,d:150}, {t:4,f1:165,f2:165,d:150}, null, {t:4,f1:146,f2:146,d:100}, null ]\n];\nallow bSpeeds = [10, 8, 12];\n\nallow cursor = 0;\nallow scrollCol = 0;\nallow pBeat = -1;\nallow bTick = 0;\nallow bStep = 0;\n\nwindow.launchROM_SOUNDPAD = collect(payload) {\n\tSYSTEM.state = 'APP';\n\tSYSTEM.activeApp = {\n\t\tupdate: collect() {\n\t\t\tif (inputs.back && !prevInputs.back) { TRUE_KERNEL_8CHIPI.sysCall_Yield(); return; }\n\t\t\tallow r = Math.floor(cursor / 8); allow c = cursor % 8;\n\t\t\tif (inputs.left && !prevInputs.left) c = (c - 1 + 8) % 8;\n\t\t\tif (inputs.right && !prevInputs.right) c = (c + 1) % 8;\n\t\t\tif (inputs.up && !prevInputs.up) r = (r - 1 + 4) % 4;\n\t\t\tif (inputs.down && !prevInputs.down) r = (r + 1) % 4;\n\t\t\tcursor = r * 8 + c;\n\t\t\t\n\t\t\tif (c < scrollCol) scrollCol = c;\n\t\t\tif (c >= scrollCol + 4) scrollCol = c - 3;\n\n\t\t\tif ((inputs.a && !prevInputs.a) || (inputs.space && !prevInputs.space) || (inputs.y && !prevInputs.y) || (inputs.b && !prevInputs.b)) {\n\t\t\t\tallow item = grid[cursor];\n\t\t\t\tif (item.isBeat) {\n\t\t\t\t\tif (item.idx === 3) { pBeat = -1; }\n\t\t\t\t\telse { pBeat = item.idx; bTick = 0; bStep = 0; }\n\t\t\t\t} else {\n\t\t\t\t\tLINEPAD.play(item.t, item.f1, item.d, 0.5, item.f2);\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tif (pBeat >= 0) {\n\t\t\t\tbTick++;\n\t\t\t\tif (bTick >= bSpeeds[pBeat]) {\n\t\t\t\t\tbTick = 0;\n\t\t\t\t\tallow seq = beats[pBeat];\n\t\t\t\t\tallow note = seq[bStep];\n\t\t\t\t\tif (note !== null) {\n\t\t\t\t\t\tLINEPAD.play(note.t, note.f1, note.d, 0.5, note.f2);\n\t\t\t\t\t}\n\t\t\t\t\tbStep = (bStep + 1) % seq.length;\n\t\t\t\t}\n\t\t\t}\n\t\t},\n\t\trender: collect() {\n\t\t\tLGC.setColor("#111"); LGC.clear();\n\t\t\tLGC.setColor("#FFF"); LGC.setFont("bold 10px monospace"); LGC.text("LINEPAD 8-BIT SYNTH", 10, 15);\n\t\t\t\n\t\t\tif (scrollCol > 0) LGC.text("<", 2, 45);\n\t\t\tif (scrollCol < 4) LGC.text(">", 120, 45);\n\n\t\t\tfor (allow i=0; i<32; i++) {\n\t\t\t\tallow row = Math.floor(i/8); allow col = i % 8;\n\t\t\t\tif (col >= scrollCol && col < scrollCol + 4) {\n\t\t\t\t\tallow displayCol = col - scrollCol;\n\t\t\t\t\tallow px = 15 + displayCol * 26; allow py = 20 + row * 18;\n\t\t\t\t\tif (cursor === i) { LGC.setColor("#FFF"); LGC.rect(px-2, py-2, 24, 18); }\n\t\t\t\t\tLGC.setColor(grid[i].c); LGC.rect(px, py, 20, 14);\n\t\t\t\t\tLGC.setColor("#000"); LGC.setFont("bold 6px monospace"); \n\t\t\t\t\tallow label = grid[i].n;\n\t\t\t\t\tif (grid[i].isBeat && pBeat === grid[i].idx && Math.floor(Date.now()/200)%2===0) label = "PLY";\n\t\t\t\t\tLGC.text(label.substring(0,5), px+1, py+10);\n\t\t\t\t}\n\t\t\t}\n\t\t\tLGC.setColor("#FFF"); LGC.setFont("8px monospace");\n\t\t\tallow item = grid[cursor];\n\t\t\tif (!item.isBeat) {\n\t\t\t\tallow typeName = ["SQ-O","SAW","TRI","NOI-O","PL25","PL12","NOI-S","FM","SQ50","NOI-L"][item.t] || "???";\n\t\t\t\tLGC.text("W:"+typeName+" F:"+Math.floor(item.f1)+"->"+Math.floor(item.f2), 10, 95);\n\t\t\t} else {\n\t\t\t\tLGC.text(item.n + " SEQUENCE", 10, 95);\n\t\t\t}\n\t\t}\n\t};\n};\n[/ENGINE SOURCE CODE]\n========`;
 	let spData = processRawAppBlock(soundPadLMF);
 	if (spData) { spData.isHidden = true; INSTALLED_APPS.push(spData); }
 
@@ -1833,7 +1939,7 @@ function renderAppManager() {
 	if (renderCount < displayLimit && APP_MAN.offset <= APP_MAN.list.length) { let idx = APP_MAN.list.length; if (idx >= APP_MAN.offset && renderCount < displayLimit) { LGC.text((APP_MAN.cursor === idx ? "> " : "  ") + "DELETE SELECTED", 2, y); y+=10; renderCount++; } idx++; if (idx >= APP_MAN.offset && renderCount < displayLimit) { LGC.text((APP_MAN.cursor === idx ? "> " : "  ") + "DELETE ALL", 2, y); y+=10; renderCount++; } }
 }
 
-const INDEX_TEXT=["** NEW 1.5 MEMORY ARCHITECTURE **","VM strictly exposes internal RAM!","Use RAM.read8(addr)/write8(addr, v)","in JS to store data natively.","CRT Chip upgraded to x86 Segmentation!","Registers: CS, DS, SS, ES added.","Physical Addr = (Segment<<4) + Offset.","Cmd 0xB loads Segments.","","** NEW 1.4 LGC LGM MODE **","LGC.drawLGM(mode, cx, cy, cz, p, a, h, t)","mode: 0=Chk,1=Pls,2=Fire,3=Stc,4=Tun","Brings 3D scaling and rotation to","procedural graphics! Requires CRT.","","LINE MEDIA FORMAT (LMF)","OS VER: 2.1 (VM EDITION)","HARDWARE: LINE128 MEMORY & LGC","KERNEL: 8CHIPI VIRTUAL CPU","KERNEL: CH81 8-BIT ASM","-----------------------","Line OS utilizes a custom scripting","language explicitly authorized by","the KERNEL prior to execution.","","** NEW 1.4 TERMINAL UPDATES **","Type 'RUN CH8' in Terminal to","launch CHIP-8 binaries instantly.","Scrolling enhanced for Terminal.","","** NEW 1.4 LGC COMMANDS **","LGC.drawPlasma(x,y,w,h,time)","LGC.drawFire(x,y,w,h,time)","LGC.drawTunnel(x,y,w,h,time)","LGC.drawStatic(x,y,w,h)","LGC.drawConcentric(x,y,r,s,arr)","LGC.drawIsometricTile(x,y,size,"," topColor, leftCol, rightCol)","","** LINEPAD AUDIO **","LINEPAD is a built-in 8-bit","sound synthesizer that","emulates real audio waves.","LINEPAD.play(type, freq, dur, vol, endFreq)","Types: 0=SQ, 1=SAW, 2=TRI, 3=NOISE","","** CRT CHIP (16-BIT) **","The Custom Regulated Chip","has up to 256KB RAM & 16-bit logic.","Registers: AB,CD,EF,GH (Pairs)","To use 16-bit mode, add:","CRT_16_run","Custom_16bit_graphics","under your SYS_CALL.","For enhanced 8-bit mode add:","8bit_crt_chip","To utilize 128KB RAM add:","utilize_128kb","To utilize 256KB RAM add:","utilize_256kb","To use 240p resolution add:","display_240p","To trigger screen only mode add:","enable_screen_only","","SMART VM: CRT Chip can also","run standard 8-bit games","via backward compatibility.","","** 8-BIT GRAPHICS! **","LGC.bresenhamLine(x0,y0,x1,y1)","LGC.bresenhamCircle(xc,yc,r)","LGC.fillBresenhamCircle(xc,yc,r)","LGC.draw3DPlane(camX,camY,camZ,"," angle,pitch,horizon,c1,c2)","LGC.checkerboard(x,y,w,h,s,c1,c2)","LGC.noise(x,y,w,h,density)","LGC.scanlineFill(x,y,w,h,space)","LGC.retroShadowRect(x,y,w,h,c,ox,oy)","LGC.drawWireCube(cx,cy,cz,s,rx,ry,rz)","LGC.drawStarfield(starsArr, speed)","LGC.drawRotatedSprite(x,y,data,w,h,r)","LGC.draw1BitImage(x,y,hex,w,h,on,off)","","** CH81 BASIC & ASM **","Compiled basic utilizes CH81 VRAM.","NEW LMV CMD: LMV Pair, X, Y, W","Pair=0-3(HL,DE,BC,AF ptr)","NEW DRAW CMD: RECT X, Y, W, H","NEW COL CMD: COL Reg (0-15 hex)","UPDATE command yields frame.","","** KERNEL VERIFICATION **","All game code MUST include an","official hardcoded SYS_CALL","signature to run (e.g.,","SYS_CALL:0x88A1 or 0x99B2).","Unsigned code will trigger a","KERNEL PANIC.","","** LMV NATIVE RENDERING **","Use LGC.drawLMV(lmvStr, x, y,","width, ignoreBlack) to render","video/picture strings in-game.","","** PREV LGC CAPABILITIES **","LGC.setPixel(x, y)","LGC.fillTriangle(x1,y1,x2,y2,x3,y3)","LGC.strokeTriangle(...)","LGC.outlineText(txt, x, y, color)","LGC.invertRect(x, y, w, h)","LGC.screenShake(intensity)","LGC.drawSprite(x, y, hexData,","w, h, ignoreBlack, scale) - Raw","1D hex string drawing for tiles!","","** 2D/3D POLYGON GRAPHICS **","LGC.fillPolygon([x1,y1,x2,y2...])","LGC.strokePolygon([x1,y1...])","LGC.ditherPolygon(pts, pattern)","LGC.drawRetroVector(x,y,scl,rot,pts)","LGC.project3D(x,y,z,fov,camZ) -","Returns {x,y,s} mapped to screen!"];
+const INDEX_TEXT=["** NEW 1.5 MEMORY ARCHITECTURE **","VM strictly exposes internal RAM!","Use RAM.read8(addr)/write8(addr, v)","in JS to store data natively.","CRT Chip upgraded to x86 Segmentation!","Registers: CS, DS, SS, ES added.","Physical Addr = (Segment<<4) + Offset.","Cmd 0xB loads Segments.","","** NEW 1.4 LGC LGM MODE **","LGC.drawLGM(mode, cx, cy, cz, p, a, h, t)","mode: 0=Chk,1=Pls,2=Fire,3=Stc,4=Tun","Brings 3D scaling and rotation to","procedural graphics! Requires CRT.","","LINE MEDIA FORMAT (LMF)","OS VER: 2.1 (VM EDITION)","HARDWARE: LINE128 MEMORY & LGC","KERNEL: 8CHIPI VIRTUAL CPU","KERNEL: CH81 8-BIT ASM","-----------------------","Line OS utilizes a custom scripting","language explicitly authorized by","the KERNEL prior to execution.","","** NEW 1.4 TERMINAL UPDATES **","Type 'RUN CH8' in Terminal to","launch CHIP-8 binaries instantly.","Scrolling enhanced for Terminal.","","** NEW 1.4 LGC COMMANDS **","LGC.drawPlasma(x,y,w,h,time)","LGC.drawFire(x,y,w,h,time)","LGC.drawTunnel(x,y,w,h,time)","LGC.drawStatic(x,y,w,h)","LGC.drawConcentric(x,y,r,s,arr)","LGC.drawIsometricTile(x,y,size,"," topColor, leftCol, rightCol)","","** LINEPAD AUDIO **","Built-in sound synthesizer","emulates 8/16-bit chips!","LINEPAD.play(type, freq, dur, vol, endFreq, opts)","Types 0-3: Legacy SQ, SAW, TRI, NOI","Types 4-9: 25% PL, 12% PL, SHORT NOI,","FM, 50% PL, LONG NOI.","opts = {attack, decay, sustain, release, fmRatio}","","** CRT CHIP (16-BIT) **","The Custom Regulated Chip","has up to 256KB RAM & 16-bit logic.","Registers: AB,CD,EF,GH (Pairs)","To use 16-bit mode, add:","CRT_16_run","Custom_16bit_graphics","under your SYS_CALL.","For enhanced 8-bit mode add:","8bit_crt_chip","To utilize 128KB RAM add:","utilize_128kb","To utilize 256KB RAM add:","utilize_256kb","To use 240p resolution add:","display_240p","To trigger screen only mode add:","enable_screen_only","","SMART VM: CRT Chip can also","run standard 8-bit games","via backward compatibility.","","** 8-BIT GRAPHICS! **","LGC.bresenhamLine(x0,y0,x1,y1)","LGC.bresenhamCircle(xc,yc,r)","LGC.fillBresenhamCircle(xc,yc,r)","LGC.draw3DPlane(camX,camY,camZ,"," angle,pitch,horizon,c1,c2)","LGC.checkerboard(x,y,w,h,s,c1,c2)","LGC.noise(x,y,w,h,density)","LGC.scanlineFill(x,y,w,h,space)","LGC.retroShadowRect(x,y,w,h,c,ox,oy)","LGC.drawWireCube(cx,cy,cz,s,rx,ry,rz)","LGC.drawStarfield(starsArr, speed)","LGC.drawRotatedSprite(x,y,data,w,h,r)","LGC.draw1BitImage(x,y,hex,w,h,on,off)","","** CH81 BASIC & ASM **","Compiled basic utilizes CH81 VRAM.","NEW LMV CMD: LMV Pair, X, Y, W","Pair=0-3(HL,DE,BC,AF ptr)","NEW DRAW CMD: RECT X, Y, W, H","NEW COL CMD: COL Reg (0-15 hex)","UPDATE command yields frame.","","** KERNEL VERIFICATION **","All game code MUST include an","official hardcoded SYS_CALL","signature to run (e.g.,","SYS_CALL:0x88A1 or 0x99B2).","Unsigned code will trigger a","KERNEL PANIC.","","** LMV NATIVE RENDERING **","Use LGC.drawLMV(lmvStr, x, y,","width, ignoreBlack) to render","video/picture strings in-game.","","** PREV LGC CAPABILITIES **","LGC.setPixel(x, y)","LGC.fillTriangle(x1,y1,x2,y2,x3,y3)","LGC.strokeTriangle(...)","LGC.outlineText(txt, x, y, color)","LGC.invertRect(x, y, w, h)","LGC.screenShake(intensity)","LGC.drawSprite(x, y, hexData,","w, h, ignoreBlack, scale) - Raw","1D hex string drawing for tiles!","","** 2D/3D POLYGON GRAPHICS **","LGC.fillPolygon([x1,y1,x2,y2...])","LGC.strokePolygon([x1,y1...])","LGC.ditherPolygon(pts, pattern)","LGC.drawRetroVector(x,y,scl,rot,pts)","LGC.project3D(x,y,z,fov,camZ) -","Returns {x,y,s} mapped to screen!"];
 const LMF_INDEX = { scrollY: 0, scrollX: 0, wrap: true, lines: [] };
 
 function updateLMFIndexLines() {
@@ -1899,27 +2005,42 @@ function finalizeAppLaunch(app) {
 	let hasLGM = payload.includes("LGC.drawLGM"); 
 	let requiresCRT = isCRT16 || isCRT8 || use128kb || use256kb || hasLGM;
 
-	// SMART VM AUTO-SWITCHING
+    if (requiresCRT && SYSTEM.chipMode === 0) { 
+		if (hasLGM) SYSTEM.panic("ERR: LGM MODE REQ. USE CRT CHIP."); 
+		else SYSTEM.panic("ERR: CRT/16-BIT CODE. USE CRT CHIP."); 
+		return; 
+	}
+	
+	if (!requiresCRT && SYSTEM.chipMode > 0) { 
+		SYSTEM.panic("ERR: 8-BIT Z80 CODE. SWITCH TO Z80 CHIP (OR ADD 8bit_crt_chip)."); 
+		return; 
+	} else if (isCRT8 && SYSTEM.chipMode > 0) { 
+		SYSTEM.notification = "SMART VM: 8-BIT COMPATIBILITY"; 
+		SYSTEM.notifTimer = 180; 
+	} else if (isCRT16 && SYSTEM.chipMode > 0) { 
+		SYSTEM.notification = "16-BIT GRAPHICS ENABLED"; 
+		SYSTEM.notifTimer = 180; 
+	}
+
+	if (disp240p && SYSTEM.resolution === 0) { 
+		SYSTEM.panic("ERR: 240P REQ. CHANGE RES TO 240P IN HARDWARE SETTINGS."); 
+		return; 
+	}
+	if (!disp240p && SYSTEM.resolution === 1) { 
+		SYSTEM.panic("ERR: 128P REQ. CHANGE RES TO 128P IN HARDWARE SETTINGS."); 
+		return; 
+        
+     }
+
+    // SMART VM AUTO-SWITCHING
 	if (use256kb && SYSTEM.chipMode !== 2) {
 		SYSTEM.chipMode = 2; applySettings();
 		SYSTEM.notification = "AUTO-SWITCH: CRT 256KB"; SYSTEM.notifTimer = 180;
 	} else if (use128kb && SYSTEM.chipMode !== 1 && !use256kb) {
 		SYSTEM.chipMode = 1; applySettings();
-		SYSTEM.notification = "AUTO-SWITCH: CRT 128KB"; SYSTEM.notifTimer = 180;
-	} else if (requiresCRT && SYSTEM.chipMode === 0) {
-		SYSTEM.chipMode = 1; applySettings();
-		SYSTEM.notification = "AUTO-SWITCH: CRT 16-BIT"; SYSTEM.notifTimer = 180;
-	} else if (!requiresCRT && SYSTEM.chipMode > 0) {
-		SYSTEM.chipMode = 0; applySettings();
-		SYSTEM.notification = "AUTO-SWITCH: Z80 8-BIT"; SYSTEM.notifTimer = 180;
-	}
 
-	if (disp240p && SYSTEM.resolution === 0) { 
-		SYSTEM.resolution = 1; applySettings();
-	} else if (!disp240p && SYSTEM.resolution === 1) { 
-		SYSTEM.resolution = 0; applySettings();
-	}
-
+    }
+        
 	let exeCmd = app.exeCmd;
 	let tFunc = exeCmd ? TRUE_KERNEL_8CHIPI.appRegistry[exeCmd] : null;
 
